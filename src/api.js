@@ -1,5 +1,42 @@
 const { DEFAULT_BASE_URL, DEFAULT_LOGIN_PATH } = require("./capture");
 
+async function readErrorDetail(response) {
+  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  const rawBody = await response.text().catch(() => "");
+  if (!rawBody) {
+    return "";
+  }
+
+  if (contentType.includes("application/json")) {
+    try {
+      const parsed = JSON.parse(rawBody);
+      if (parsed && typeof parsed === "object") {
+        if (parsed.Message) {
+          return String(parsed.Message);
+        }
+        if (parsed.message) {
+          return String(parsed.message);
+        }
+      }
+    } catch (error) {
+      // Fall back to the raw body when the payload is not valid JSON.
+    }
+  }
+
+  return rawBody.replace(/\s+/g, " ").trim();
+}
+
+async function throwForHttpError(response, method, apiPath) {
+  if (response.ok) {
+    return;
+  }
+
+  const detail = await readErrorDetail(response);
+  throw new Error(
+    `${method} ${apiPath} failed with status ${response.status}${detail ? `: ${detail}` : ""}`,
+  );
+}
+
 class VelaClient {
   constructor(options = {}) {
     this.baseUrl = options.baseUrl || process.env.VELA_BASE_URL || DEFAULT_BASE_URL;
@@ -76,10 +113,7 @@ class VelaClient {
 
   async getJson(apiPath) {
     const response = await this.request(apiPath, { method: "GET" });
-
-    if (!response.ok) {
-      throw new Error(`GET ${apiPath} failed with status ${response.status}`);
-    }
+    await throwForHttpError(response, "GET", apiPath);
 
     return response.json();
   }
@@ -92,10 +126,7 @@ class VelaClient {
       },
       body: JSON.stringify(payload),
     });
-
-    if (!response.ok) {
-      throw new Error(`PUT ${apiPath} failed with status ${response.status}`);
-    }
+    await throwForHttpError(response, "PUT", apiPath);
 
     return response.json();
   }
@@ -108,10 +139,7 @@ class VelaClient {
       },
       body: JSON.stringify(payload),
     });
-
-    if (!response.ok) {
-      throw new Error(`POST ${apiPath} failed with status ${response.status}`);
-    }
+    await throwForHttpError(response, "POST", apiPath);
 
     return response.json();
   }

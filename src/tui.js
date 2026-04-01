@@ -1,6 +1,7 @@
 const blessed = require("blessed");
 const YAML = require("yaml");
 const { VelaClient } = require("./api");
+const { deployApplication, isDeployConflictError, resolveDeployWorkflowName } = require("./deploy");
 const policyEdit = require("./policy-edit");
 const unicode = blessed.unicode || require("blessed/lib/unicode");
 
@@ -367,6 +368,10 @@ function normalizeResourceKey(resourceKey) {
   return key;
 }
 
+function isDeployableView(view) {
+  return view.kind === "app-policies";
+}
+
 async function fetchApplications(client) {
   const data = await client.getJson("/api/v1/applications");
   return data.applications || [];
@@ -557,6 +562,7 @@ async function runTui(options = {}) {
     currentVisibleItems: [],
     suppressSelectionEvent: false,
     inputMode: null,
+    pendingDeploy: null,
   };
 
   const header = blessed.box({
@@ -671,7 +677,7 @@ async function runTui(options = {}) {
     top: "center",
     left: "center",
     width: "72%",
-    height: 18,
+    height: 21,
     hidden: true,
     border: "line",
     scrollable: true,
@@ -705,6 +711,7 @@ async function runTui(options = {}) {
       "  [up/down] or [j/k] move selection",
       "  [enter] drill down into the selected row",
       "  [d] describe the selected row",
+      "  [p] deploy the selected policy after confirmation",
       "  [e] edit the selected policy (policies view only)",
       "  [esc] / [left] / [backspace] go back one level",
       "  [y] toggle describe format between YAML and JSON",
@@ -743,6 +750,24 @@ async function runTui(options = {}) {
     },
   });
 
+  const confirmBox = blessed.box({
+    parent: screen,
+    top: "center",
+    left: "center",
+    width: "64%",
+    height: 12,
+    hidden: true,
+    border: "line",
+    label: " Deploy Confirm ",
+    tags: true,
+    keys: true,
+    vi: true,
+    mouse: true,
+    style: {
+      border: { fg: "red" },
+    },
+  });
+
   function getCurrentView() {
     return state.viewStack[state.viewStack.length - 1];
   }
@@ -769,7 +794,7 @@ async function runTui(options = {}) {
   }
 
   function hasOpenOverlay() {
-    return isInputActive() || !help.hidden || !modal.hidden;
+    return isInputActive() || !help.hidden || !modal.hidden || !confirmBox.hidden;
   }
 
   function getVisibleItems(view = getCurrentView()) {
@@ -819,6 +844,54 @@ async function runTui(options = {}) {
     renderTopBar();
   }
 
+  function openModal(label, content) {
+    modal.setLabel(` ${label} `);
+    modal.show();
+    modal.focus();
+    modal.setContent(content);
+    modal.setScroll(0);
+    screen.render();
+  }
+
+  function closeConfirmBox() {
+    state.pendingDeploy = null;
+    confirmBox.hide();
+    resourceTable.focus();
+    screen.render();
+  }
+
+  function openDeployConfirm(pendingDeploy) {
+    state.pendingDeploy = pendingDeploy;
+    const isForceRestart = Boolean(pendingDeploy.force);
+    confirmBox.setLabel(isForceRestart ? " Force Restart Confirm " : " Deploy Confirm ");
+    confirmBox.setContent(
+      isForceRestart
+        ? [
+            "{bold}Workflow is executing. Do you want to force a restart?{/bold}",
+            "",
+            `Application: ${pendingDeploy.appName}`,
+            `Policy: ${pendingDeploy.policyName}`,
+            `Workflow: ${pendingDeploy.workflowName}`,
+            `Env: ${pendingDeploy.envName || "<none>"}`,
+            "",
+            "Press [enter] or [y] to force restart, [esc] or [n] to cancel.",
+          ].join("\n")
+        : [
+            "{bold}Confirm deployment{/bold}",
+            "",
+            `Application: ${pendingDeploy.appName}`,
+            `Policy: ${pendingDeploy.policyName}`,
+            `Workflow: ${pendingDeploy.workflowName}`,
+            `Env: ${pendingDeploy.envName || "<none>"}`,
+            "",
+            "Press [enter] or [y] to deploy, [esc] or [n] to cancel.",
+          ].join("\n"),
+    );
+    confirmBox.show();
+    confirmBox.focus();
+    screen.render();
+  }
+
   function renderTopBar() {
     if (isInputActive()) {
       return;
@@ -849,6 +922,7 @@ async function runTui(options = {}) {
       ["<enter>", "Open"],
       ["<esc>", "Back"],
       ["<d>", "Describe"],
+      ...(isDeployableView(currentView) ? [["<p>", "Deploy"]] : []),
       ...(currentView.kind === "app-policies" ? [["<e>", "Edit"]] : []),
       ["<tab>", "Next"],
       ["<r>", "Refresh"],
@@ -1073,12 +1147,7 @@ async function runTui(options = {}) {
     }
 
     const cacheKey = `${currentView.id}:${state.describeFormat}:${currentView.getId(selectedItem)}`;
-    modal.setLabel(` Describe: ${currentView.getId(selectedItem)} (${state.describeFormat.toUpperCase()}) `);
-    modal.show();
-    modal.focus();
-    modal.setContent("Loading describe output...");
-    modal.setScroll(0);
-    screen.render();
+    openModal(`Describe: ${currentView.getId(selectedItem)} (${state.describeFormat.toUpperCase()})`, "Loading describe output...");
 
     if (!force && state.describeCache.has(cacheKey)) {
       modal.setContent(state.describeCache.get(cacheKey));
@@ -1098,6 +1167,106 @@ async function runTui(options = {}) {
       setStatus(`Describe failed: ${summarizeError(error)}`);
       screen.render();
     }
+  }
+
+  function getSelectedPolicyDeployContext() {
+    const currentView = getCurrentView();
+    const selectedItem = getCurrentSelection();
+
+    if (!isDeployableView(currentView)) {
+      return {
+        error: "Deploy is only available from the policies view.",
+      };
+    }
+
+    if (!selectedItem) {
+      return {
+        error: "Nothing selected.",
+      };
+    }
+
+    const appName = currentView.scope?.appName;
+    const policyName = currentView.getId(selectedItem);
+    if (!appName || !policyName) {
+      return {
+        error: "Unable to resolve the selected policy for deployment.",
+      };
+    }
+
+    return {
+      appName,
+      policyName,
+      envName: selectedItem.envName || "",
+    };
+  }
+
+  async function performConfirmedDeploy() {
+    const pendingDeploy = state.pendingDeploy;
+    if (!pendingDeploy) {
+      closeConfirmBox();
+      return;
+    }
+
+    confirmBox.hide();
+    setStatus(
+      `${pendingDeploy.force ? "Force restarting" : "Deploying"} ${pendingDeploy.appName} with workflow ${pendingDeploy.workflowName}...`,
+    );
+    screen.render();
+
+    try {
+      const result = await deployApplication(client, pendingDeploy.appName, {
+        policy: pendingDeploy.policyName,
+        force: Boolean(pendingDeploy.force),
+      });
+      state.describeCache.clear();
+      openModal(
+        `Deploy: ${result.appName} (${state.describeFormat.toUpperCase()})`,
+        stringifyDetail(result.response, state.describeFormat),
+      );
+      setStatus(
+        `${pendingDeploy.force ? "Force restarted" : "Deployed"} ${result.appName} with workflow ${result.workflowName}.`,
+      );
+      state.pendingDeploy = null;
+      screen.render();
+    } catch (error) {
+      if (!pendingDeploy.force && isDeployConflictError(error)) {
+        openDeployConfirm({
+          ...pendingDeploy,
+          force: true,
+        });
+        setStatus("Workflow is executing. Confirm to force restart.");
+        return;
+      }
+      state.pendingDeploy = null;
+      setStatus(`Deploy failed: ${summarizeError(error)}`);
+      screen.render();
+    }
+  }
+
+  async function prepareDeployForSelectedPolicy() {
+    const context = getSelectedPolicyDeployContext();
+    if (context.error) {
+      setStatus(context.error);
+      screen.render();
+      return;
+    }
+
+    try {
+      const workflowName = await resolveDeployWorkflowName(client, context.appName, {
+        policy: context.policyName,
+      });
+      openDeployConfirm({
+        appName: context.appName,
+        policyName: context.policyName,
+        workflowName,
+        envName: context.envName,
+        force: false,
+      });
+      setStatus(`Ready to deploy policy ${context.policyName}.`);
+    } catch (error) {
+      setStatus(`Deploy unavailable: ${summarizeError(error)}`);
+    }
+    screen.render();
   }
 
   function restoreScreenAfterExternalCommand(resumeTerminal) {
@@ -1413,10 +1582,15 @@ async function runTui(options = {}) {
     screen.render();
   });
 
-  [help, modal].forEach((widget) => {
+  [help, modal, confirmBox].forEach((widget) => {
     widget.key(["escape", "q"], () => {
       if (widget === modal) {
         closeModal();
+        return;
+      }
+      if (widget === confirmBox) {
+        closeConfirmBox();
+        setStatus("Deploy cancelled.");
         return;
       }
       help.hide();
@@ -1440,6 +1614,11 @@ async function runTui(options = {}) {
     }
     if (!modal.hidden) {
       closeModal();
+      return;
+    }
+    if (!confirmBox.hidden) {
+      closeConfirmBox();
+      setStatus("Deploy cancelled.");
       return;
     }
     screen.destroy();
@@ -1484,7 +1663,7 @@ async function runTui(options = {}) {
   });
 
   screen.key(["?"], () => {
-    if (isInputActive() || !modal.hidden) {
+    if (isInputActive() || !modal.hidden || !confirmBox.hidden) {
       return;
     }
     toggleHelp();
@@ -1496,6 +1675,11 @@ async function runTui(options = {}) {
     }
     if (!modal.hidden) {
       closeModal();
+      return;
+    }
+    if (!confirmBox.hidden) {
+      closeConfirmBox();
+      setStatus("Deploy cancelled.");
       return;
     }
     if (!help.hidden) {
@@ -1516,6 +1700,10 @@ async function runTui(options = {}) {
   });
 
   screen.key(["y"], async () => {
+    if (!confirmBox.hidden) {
+      await performConfirmedDeploy();
+      return;
+    }
     if (isInputActive() || !help.hidden) {
       return;
     }
@@ -1541,6 +1729,13 @@ async function runTui(options = {}) {
     await openDescribe(false);
   });
 
+  screen.key(["p"], async () => {
+    if (hasOpenOverlay()) {
+      return;
+    }
+    await prepareDeployForSelectedPolicy();
+  });
+
   screen.key(["e"], async () => {
     if (hasOpenOverlay()) {
       return;
@@ -1549,10 +1744,22 @@ async function runTui(options = {}) {
   });
 
   screen.key(["enter"], async () => {
+    if (!confirmBox.hidden) {
+      await performConfirmedDeploy();
+      return;
+    }
     if (hasOpenOverlay()) {
       return;
     }
     await drillDown();
+  });
+
+  screen.key(["n"], () => {
+    if (confirmBox.hidden) {
+      return;
+    }
+    closeConfirmBox();
+    setStatus("Deploy cancelled.");
   });
 
   renderHeader();

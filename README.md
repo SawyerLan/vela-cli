@@ -103,6 +103,7 @@ The first version includes:
 - a single full-width resource table with no preview pane
 - a single compact top status area for context, commands, and search state
 - `enter` for drill-down and `d` for describe
+- `p` for deploy from the selected policy with an explicit confirmation step
 - `e` for editing the selected policy from the policies view with the same backup-first flow as `edit policy`
 - keyboard shortcuts for switching resources, filtering, refreshing, and going back up one level
 
@@ -115,6 +116,7 @@ Useful keys:
 - `j` / `k` or arrow keys: move selection
 - `enter`: drill down into the selected row
 - `d`: describe the selected row
+- `p`: deploy the selected policy after showing app, policy, and workflow for confirmation
 - `e`: edit the selected policy from the policies view
 - `esc` / `left` / `backspace`: go back one level
 - `y`: toggle detail format between YAML and JSON
@@ -130,6 +132,8 @@ Useful command examples:
 - `:apps /foo` to switch resource and immediately apply a filter
 
 If you want the TUI to use a specific editor for `e`, launch it with `node ./src/cli.js tui --editor <command>` or set `VELA_EDITOR`.
+
+If Vela reports `application deploy conflict`, the TUI shows a second confirmation and can retry the same deploy with `force: true`, matching the browser flow.
 
 Useful filter examples:
 

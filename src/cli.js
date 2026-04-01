@@ -8,6 +8,7 @@ const { Command } = require("commander");
 const YAML = require("yaml");
 const { runCapture, DEFAULT_BASE_URL, DEFAULT_LOGIN_PATH } = require("./capture");
 const { VelaClient } = require("./api");
+const { deployApplication, isDeployConflictError } = require("./deploy");
 const policyEdit = require("./policy-edit");
 const { RESOURCE_ORDER, runTui } = require("./tui");
 
@@ -342,10 +343,6 @@ async function getOverrideEnvNames(client, appName) {
 
 function uniqueNonEmpty(items) {
   return Array.from(new Set(items.filter(Boolean))).sort();
-}
-
-function getWorkflowNamesFromPolicy(policy) {
-  return uniqueNonEmpty((policy.workflowPolicyBind || []).map((item) => item.name));
 }
 
 async function getEnvNames(client, appName) {
@@ -698,10 +695,6 @@ function getPolicyApiPath(appName, policyName) {
   return `/api/v1/applications/${encodeURIComponent(appName)}/policies/${encodeURIComponent(policyName)}`;
 }
 
-function getDeployApiPath(appName) {
-  return `/api/v1/applications/${encodeURIComponent(appName)}/deploy`;
-}
-
 function renderMutationObject(data, options, defaultFormat = "json") {
   const format = resolveOutputFormat(options, defaultFormat);
   if (format === "table") {
@@ -712,63 +705,6 @@ function renderMutationObject(data, options, defaultFormat = "json") {
     return;
   }
   printYaml(data);
-}
-
-function resolveWorkflowFromCandidates(sourceLabel, sourceValue, workflowNames) {
-  if (workflowNames.length === 0) {
-    throw new Error(`No workflow binding found for ${sourceLabel} '${sourceValue}'.`);
-  }
-
-  if (workflowNames.length > 1) {
-    throw new Error(
-      `${sourceLabel} '${sourceValue}' maps to multiple workflows (${workflowNames.join(", ")}). Use --workflow.`,
-    );
-  }
-
-  return workflowNames[0];
-}
-
-async function resolveDeployWorkflowName(client, appName, options) {
-  const selected = [options.workflow, options.policy, options.env].filter(Boolean);
-  if (selected.length !== 1) {
-    throw new Error("deploy app requires exactly one of --workflow, --policy, or --env.");
-  }
-
-  if (options.workflow) {
-    return options.workflow;
-  }
-
-  const policies = await getApplicationPolicies(client, appName);
-
-  if (options.policy) {
-    const policySummary = policies.find((item) => item.name === options.policy);
-    if (!policySummary) {
-      const available = uniqueNonEmpty(policies.map((item) => item.name));
-      throw new Error(
-        `Policy '${options.policy}' was not found in app '${appName}'. Available policies: ${available.join(", ") || "<none>"}`,
-      );
-    }
-    const policy = await client.getJson(getPolicyApiPath(appName, policySummary.name));
-    return resolveWorkflowFromCandidates("policy", options.policy, getWorkflowNamesFromPolicy(policy));
-  }
-
-  const matchedPolicySummaries = policies.filter((item) => item.envName === options.env);
-  if (matchedPolicySummaries.length === 0) {
-    const available = await getEnvNames(client, appName);
-    throw new Error(
-      `No policy with env '${options.env}' was found in app '${appName}'. Available envs: ${available.join(", ") || "<none>"}`,
-    );
-  }
-
-  const matchedPolicies = await Promise.all(
-    matchedPolicySummaries.map((policy) => client.getJson(getPolicyApiPath(appName, policy.name))),
-  );
-
-  return resolveWorkflowFromCandidates(
-    "env",
-    options.env,
-    uniqueNonEmpty(matchedPolicies.flatMap((policy) => getWorkflowNamesFromPolicy(policy))),
-  );
 }
 
 async function updateExistingPolicy(client, desiredState) {
@@ -1145,15 +1081,15 @@ async function handleTui(options) {
 
 async function handleDeployApp(appName, options) {
   const client = buildClient(options);
-  const workflowName = await resolveDeployWorkflowName(client, appName, options);
-  const response = await client.postJson(getDeployApiPath(appName), {
-    appName,
-    workflowName,
-    triggerType: "web",
-    force: Boolean(options.force),
-  });
-
-  renderMutationObject(response, options, "json");
+  try {
+    const result = await deployApplication(client, appName, options);
+    renderMutationObject(result.response, options, "json");
+  } catch (error) {
+    if (!options.force && isDeployConflictError(error)) {
+      throw new Error(`${error.message}. Retry with --force to restart the running workflow.`);
+    }
+    throw error;
+  }
 }
 
 const program = new Command();
