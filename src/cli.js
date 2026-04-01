@@ -148,8 +148,8 @@ async function readLatestSummary(rootDir) {
 
 function addAuthOptions(command, outputFormats = "table, json, yaml") {
   return command
-    .option("--base-url <url>", "Vela base URL", DEFAULT_BASE_URL)
-    .option("--login-path <path>", "Login API path", DEFAULT_LOGIN_PATH)
+    .option("--base-url <url>", "Vela base URL (or set VELA_BASE_URL)", DEFAULT_BASE_URL)
+    .option("--login-path <path>", "Login API path (or set VELA_LOGIN_PATH)", DEFAULT_LOGIN_PATH)
     .option("--token <token>", "Vela bearer token (or set VELA_TOKEN)")
     .option("-o, --output <format>", `Output format: ${outputFormats}`)
     .option("--json", "Alias for --output json", false);
@@ -1121,8 +1121,8 @@ program
 program
   .command("capture")
   .description("Log into Vela and capture read-only network activity")
-  .option("--base-url <url>", "Vela base URL", DEFAULT_BASE_URL)
-  .option("--login-path <path>", "Login API path", DEFAULT_LOGIN_PATH)
+  .option("--base-url <url>", "Vela base URL (or set VELA_BASE_URL)", DEFAULT_BASE_URL)
+  .option("--login-path <path>", "Login API path (or set VELA_LOGIN_PATH)", DEFAULT_LOGIN_PATH)
   .option("--headed", "Run browser in headed mode", false)
   .action(handleCapture);
 
@@ -1134,8 +1134,8 @@ program
 program
   .command("tui")
   .description("Launch a k9s-inspired terminal UI")
-  .option("--base-url <url>", "Vela base URL", DEFAULT_BASE_URL)
-  .option("--login-path <path>", "Login API path", DEFAULT_LOGIN_PATH)
+  .option("--base-url <url>", "Vela base URL (or set VELA_BASE_URL)", DEFAULT_BASE_URL)
+  .option("--login-path <path>", "Login API path (or set VELA_LOGIN_PATH)", DEFAULT_LOGIN_PATH)
   .option("--token <token>", "Vela bearer token (or set VELA_TOKEN)")
   .option("--resource <name>", `Initial resource: ${RESOURCE_ORDER.join(", ")}`, "apps")
   .option("--editor <command>", "Editor command to launch for policy edits")

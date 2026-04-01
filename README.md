@@ -1,30 +1,41 @@
 # vela-cli
 
-Vela web console inspection tool with `kubectl`-style `get`, `deploy`, `edit`, and `apply` commands.
+`vela-cli` is a Node.js CLI companion for [KubeVela](https://github.com/kubevela/kubevela), used for inspecting and updating Vela resources. It uses a kubectl-style layout: `vela-cli <verb> <resource>`.
 
-Detailed Linux installation and distribution notes are in [docs/INSTALL.md](D:/new-code/vela-cli/docs/INSTALL.md).
+Detailed Linux installation and distribution notes are in [docs/INSTALL.md](docs/INSTALL.md).
 
-The CLI now follows a `kubectl`-style layout: `vela-cli <verb> <resource>`.
+中文版本: [README.zh-CN.md](README.zh-CN.md)
+
+Upstream Vela project: [kubevela/kubevela](https://github.com/kubevela/kubevela)
 
 ## Install
 
 ```bash
 npm install
 npm link
+vela-cli --help
 ```
 
-Dynamic completion works best when `VELA_USERNAME` and `VELA_PASSWORD` are already set in your shell environment.
+If you are working directly from the repository without linking the binary, use `node ./src/cli.js ...` instead.
 
-Authentication is environment-variable only. The CLI reads:
+## Authentication
+
+The CLI reads these environment variables:
 
 ```bash
-VELA_EDITOR
+VELA_BASE_URL
+VELA_LOGIN_PATH
 VELA_TOKEN
 VELA_USERNAME
 VELA_PASSWORD
+VELA_EDITOR
 ```
 
+Set `VELA_BASE_URL` and `VELA_LOGIN_PATH` to point the CLI at your target Vela environment. If you prefer, you can also pass `--base-url` and `--login-path` on the command line.
+
 If `VELA_TOKEN` is set, the CLI uses that bearer token directly. Otherwise each CLI invocation logs in with `VELA_USERNAME` and `VELA_PASSWORD`. If an authenticated request receives `401` or `403`, the client re-authenticates once and retries automatically when username/password are available.
+
+For a ready-to-fill template, see [.env.example](.env.example).
 
 ## Shell Completion
 
@@ -39,41 +50,37 @@ eval "$(vela-cli completion zsh)"
 Invoke-Expression (vela-cli completion powershell | Out-String)
 ```
 
-## Commands
+## Common Commands
 
 ```bash
-$env:VELA_USERNAME="your-user"
-$env:VELA_PASSWORD="your-pass"
-npm run capture -- --headed
-npm run endpoints
-node ./src/cli.js get me
-node ./src/cli.js get projects
-node ./src/cli.js get apps
-node ./src/cli.js get app <name>
-node ./src/cli.js describe app <name> -o yaml
-node ./src/cli.js get components <name>
-node ./src/cli.js get policies <name> -o json
-node ./src/cli.js get policies <name> --all
-node ./src/cli.js get policies <name> --type topology
-node ./src/cli.js get policy <app> <policy>
-node ./src/cli.js deploy app <app> --workflow <workflow>
-node ./src/cli.js deploy app <app> --policy <policy>
-node ./src/cli.js deploy app <app> --env <env>
-node ./src/cli.js tui
-node ./src/cli.js tui --resource envs
-node ./src/cli.js edit policy <app> <policy>
-node ./src/cli.js apply -f ./policy.yaml --app <app> --policy <policy>
-node ./src/cli.js config view <app> --env <env>
-node ./src/cli.js config view <app> --env <env> -o json
-node ./src/cli.js get revisions <name>
-node ./src/cli.js get envs
-node ./src/cli.js get definitions
-node ./src/cli.js get addons
-node ./src/cli.js get system-info
-node ./src/cli.js get raw /api/v1/applications
+vela-cli get me
+vela-cli get projects
+vela-cli get apps
+vela-cli get app <name>
+vela-cli describe app <name> -o yaml
+vela-cli get components <name>
+vela-cli get policies <name> -o json
+vela-cli get policies <name> --all
+vela-cli get policies <name> --type topology
+vela-cli get policy <app> <policy>
+vela-cli deploy app <app> --workflow <workflow>
+vela-cli deploy app <app> --policy <policy>
+vela-cli deploy app <app> --env <env>
+vela-cli tui
+vela-cli tui --resource envs
+vela-cli edit policy <app> <policy>
+vela-cli apply -f ./policy.yaml --app <app> --policy <policy>
+vela-cli config view <app> --env <env>
+vela-cli config view <app> --env <env> -o json
+vela-cli get revisions <name>
+vela-cli get envs
+vela-cli get definitions
+vela-cli get addons
+vela-cli get system-info
+vela-cli get raw /api/v1/applications
 ```
 
-On Windows PowerShell, do not run `.\src\cli.js` directly unless `.js` is associated with Node on your machine. Use `node .\src\cli.js ...`, the linked `vela-cli ...` command, or the wrapper `.\src\cli.cmd ...`.
+On Windows PowerShell, prefer `vela-cli ...` after `npm link`, or use the wrapper `.\src\cli.cmd ...` if you want to run from the repository without linking. If `.js` is associated with Node on your machine, `node .\src\cli.js ...` also works for development.
 
 ## Deploy
 
@@ -131,7 +138,7 @@ Useful command examples:
 - `:po <app>` to open policies for an app
 - `:apps /foo` to switch resource and immediately apply a filter
 
-If you want the TUI to use a specific editor for `e`, launch it with `node ./src/cli.js tui --editor <command>` or set `VELA_EDITOR`.
+If you want the TUI to use a specific editor for `e`, launch it with `vela-cli tui --editor <command>` or set `VELA_EDITOR`.
 
 If Vela reports `application deploy conflict`, the TUI shows a second confirmation and can retry the same deploy with `force: true`, matching the browser flow.
 
@@ -173,7 +180,7 @@ Default backup locations:
 - Linux: `${XDG_STATE_HOME:-~/.local/state}/vela-cli/backups/<app>/`
 - Windows: `%LOCALAPPDATA%\\vela-cli\\backups\\<app>\\`
 
-## Safety model
+## Safety Model
 
 - Allows read-only capture via Playwright as before
 - Allows terminal exploration through `vela-cli tui`, plus policy edits from the policies view with the same backup-first flow as `edit policy`
@@ -181,10 +188,20 @@ Default backup locations:
 - Allows live `PUT` updates only through `edit policy` and `apply -f`
 - Stores sanitized capture artifacts under `artifacts/`
 
-You can also use environment variables:
+## Development Mode
+
+Use these commands when you want to run from the repository without relying on the installed `vela-cli` binary:
 
 ```bash
+$env:VELA_BASE_URL="https://your-vela-host"
+$env:VELA_LOGIN_PATH="/api/v1/auth/login"
 $env:VELA_USERNAME="your-user"
 $env:VELA_PASSWORD="your-pass"
+npm run capture -- --headed
+npm run endpoints
 node ./src/cli.js get apps
 ```
+
+## License
+
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.

@@ -6,7 +6,7 @@ This document explains how to install and distribute `vela-cli` on Linux.
 
 - Node.js 20 or later
 - `npm`
-- Network access to `https://vela.lbxdrugs.com`
+- Network access to the Vela backend endpoint configured for your environment
 - A valid Vela username and password
 
 You can verify the runtime first:
@@ -34,6 +34,8 @@ Set credentials in your shell:
 ```bash
 export VELA_USERNAME="your-user"
 export VELA_PASSWORD="your-password"
+export VELA_BASE_URL="https://your-vela-host"
+export VELA_LOGIN_PATH="/api/v1/auth/login"
 ```
 
 Then verify the install:
@@ -73,6 +75,8 @@ Then configure credentials:
 ```bash
 export VELA_USERNAME="your-user"
 export VELA_PASSWORD="your-password"
+export VELA_BASE_URL="https://your-vela-host"
+export VELA_LOGIN_PATH="/api/v1/auth/login"
 ```
 
 ## Option 3: Publish To An Internal npm Registry

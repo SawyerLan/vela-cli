@@ -3,7 +3,7 @@ const path = require("node:path");
 const { chromium } = require("playwright");
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
-const DEFAULT_BASE_URL = "https://vela.lbxdrugs.com";
+const DEFAULT_BASE_URL = process.env.VELA_BASE_URL || undefined;
 const DEFAULT_LOGIN_PATH = "/api/v1/auth/login";
 const NAV_ITEMS = ["应用", "环境", "项目", "集群", "配置", "工作流", "运维"];
 
@@ -274,7 +274,12 @@ async function runCapture(options = {}) {
     throw new Error("Missing credentials. Set VELA_USERNAME and VELA_PASSWORD in the environment.");
   }
 
-  const origin = new URL(baseUrl).origin;
+  const resolvedBaseUrl = baseUrl || DEFAULT_BASE_URL;
+  if (!resolvedBaseUrl) {
+    throw new Error("Missing VELA_BASE_URL. Set VELA_BASE_URL or pass --base-url.");
+  }
+
+  const origin = new URL(resolvedBaseUrl).origin;
   const loginUrl = new URL(loginPath, origin).toString();
   const outputDir = path.join(process.cwd(), "artifacts", timestamp());
   await fs.mkdir(outputDir, { recursive: true });

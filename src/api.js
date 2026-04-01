@@ -40,6 +40,10 @@ async function throwForHttpError(response, method, apiPath) {
 class VelaClient {
   constructor(options = {}) {
     this.baseUrl = options.baseUrl || process.env.VELA_BASE_URL || DEFAULT_BASE_URL;
+    if (!this.baseUrl) {
+      throw new Error("Missing VELA_BASE_URL. Set VELA_BASE_URL or pass --base-url.");
+    }
+
     this.loginPath = options.loginPath || process.env.VELA_LOGIN_PATH || DEFAULT_LOGIN_PATH;
     this.username = options.username || process.env.VELA_USERNAME;
     this.password = options.password || process.env.VELA_PASSWORD;

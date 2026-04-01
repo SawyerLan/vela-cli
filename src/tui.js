@@ -733,7 +733,7 @@ async function runTui(options = {}) {
     noCellBorders: true,
     style: {
       border: { fg: "green" },
-      header: { fg: "black", bg: "cyan", bold: true },
+      header: { fg: "brightwhite", bold: true },
       cell: {
         fg: "white",
         selected: { fg: "black", bg: "green", bold: true },
