@@ -1,0 +1,23 @@
+{
+  "name": "vela-cli",
+  "version": "1.0.0",
+  "description": "Read-only Vela web inspector and CLI scaffold",
+  "main": "src/cli.js",
+  "bin": {
+    "vela-cli": "./src/cli.js"
+  },
+  "scripts": {
+    "prepack": "node -e \"require('node:fs').mkdirSync('dist', { recursive: true })\"",
+    "postpack": "node -e \"const fs=require('node:fs'); const path=require('node:path'); const pkg=require('./package.json'); const tarball=path.join(process.cwd(), `${pkg.name}-${pkg.version}.tgz`); const target=path.join(process.cwd(), 'dist', `${pkg.name}-${pkg.version}.tgz`); if (fs.existsSync(tarball) && tarball !== target) { if (fs.existsSync(target)) fs.rmSync(target, { force: true }); fs.renameSync(tarball, target); }\"",
+    "capture": "node ./src/cli.js capture",
+    "endpoints": "node ./src/cli.js endpoints"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "commander": "^14.0.3",
+    "playwright": "^1.58.2",
+    "yaml": "^2.8.3"
+  }
+}
