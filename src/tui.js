@@ -1,7 +1,7 @@
 const blessed = require("blessed");
 const YAML = require("yaml");
 const { VelaClient } = require("./api");
-const policyEdit = require("./policy-edit");
+const unicode = blessed.unicode || require("blessed/lib/unicode");
 
 const RESOURCE_ORDER = ["apps", "projects", "envs", "definitions", "addons"];
 
@@ -131,15 +131,69 @@ function summarizeError(error) {
 
 function truncateCell(value, width) {
   const text = value == null ? "" : String(value);
-  if (!width || text.length <= width) {
+  if (!width || unicode.strWidth(text) <= width) {
     return text;
   }
 
   if (width <= 3) {
-    return text.slice(0, width);
+    return sliceByDisplayWidth(text, width);
   }
 
-  return `${text.slice(0, width - 3)}...`;
+  return `${sliceByDisplayWidth(text, width - 3)}...`;
+}
+
+function sliceByDisplayWidth(text, maxWidth) {
+  if (!text || maxWidth <= 0) {
+    return "";
+  }
+
+  let output = "";
+  let width = 0;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const charWidth = unicode.charWidth(text, index);
+    const nextChar = unicode.isSurrogate(text, index) ? text.slice(index, index + 2) : text[index];
+
+    if (width + charWidth > maxWidth) {
+      break;
+    }
+
+    output += nextChar;
+    width += charWidth;
+
+    if (unicode.isSurrogate(text, index)) {
+      index += 1;
+    }
+  }
+
+  return output;
+}
+
+function padDisplayWidth(value, width) {
+  const text = value == null ? "" : String(value);
+  const visibleText = text.replace(/\{\/?[^}]+\}/g, "");
+  const displayWidth = unicode.strWidth(visibleText);
+  if (displayWidth >= width) {
+    return text;
+  }
+
+  return `${text}${" ".repeat(width - displayWidth)}`;
+}
+
+function buildHeaderStatusLine(text, width) {
+  const lineWidth = Math.max(width || 0, 1);
+  const label = "{yellow-fg}State:{/yellow-fg} ";
+  const visibleLabelWidth = unicode.strWidth("State: ");
+  const messageWidth = Math.max(lineWidth - visibleLabelWidth, 1);
+  const message = truncateCell(text || "Ready", messageWidth);
+  const baseLine = `${label}${message}`;
+  const visibleBaseWidth = unicode.strWidth(`State: ${message}`);
+
+  if (visibleBaseWidth >= lineWidth) {
+    return baseLine;
+  }
+
+  return `${baseLine}{cyan-fg}${"-".repeat(lineWidth - visibleBaseWidth)}{/cyan-fg}`;
 }
 
 function stringifyDetail(value, format) {
@@ -154,6 +208,18 @@ function buildRows(view, items) {
   const header = view.columns.map((column) => column.title);
   const rows = items.map((item) => view.columns.map((column) => truncateCell(column.value(item), column.width)));
   return [header, ...rows];
+}
+
+function buildPlaceholderRow(columns, message) {
+  return columns.map((column, index) => (index === 0 ? truncateCell(message, column.width) : ""));
+}
+
+function extractContextLabel(baseUrl) {
+  try {
+    return new URL(baseUrl).host;
+  } catch (error) {
+    return baseUrl;
+  }
 }
 
 function normalizeLabelEntries(item) {
@@ -456,97 +522,6 @@ function createAppPoliciesView(app, options = {}) {
   };
 }
 
-function buildPreview(view, item, items) {
-  const lines = [`Scope: ${view.breadcrumb}`, `Items: ${items.length}`];
-
-  if (!item) {
-    lines.push("", "No row selected.");
-    return lines.join("\n");
-  }
-
-  if (view.kind === "root" && view.rootResource === "projects") {
-    lines.push(`Selected: ${item.name || ""}`);
-    lines.push(`Alias: ${item.alias || ""}`);
-    lines.push(`Owner: ${item.owner?.name || ""}`);
-    lines.push(`Roles: ${(item.roles || []).map((role) => role.name).join(", ")}`);
-    lines.push("");
-    lines.push("Enter: open apps in this project");
-    lines.push("d: describe project");
-    return lines.join("\n");
-  }
-
-  if (view.kind === "root" && view.rootResource === "apps") {
-    lines.push(`Selected: ${item.name || ""}`);
-    lines.push(`Project: ${item.project?.name || ""}`);
-    lines.push(`Alias: ${item.alias || ""}`);
-    lines.push(`Updated: ${item.updateTime || ""}`);
-    lines.push("");
-    lines.push("Enter: open policies for this app");
-    lines.push("d: describe app");
-    lines.push("e: edit policy in policies view");
-    return lines.join("\n");
-  }
-
-  if (view.kind === "project-apps") {
-    lines.push(`Project: ${view.scope.projectName}`);
-    lines.push(`Selected app: ${item.name || ""}`);
-    lines.push(`Alias: ${item.alias || ""}`);
-    lines.push(`Updated: ${item.updateTime || ""}`);
-    lines.push("");
-    lines.push("Enter: open policies for this app");
-    lines.push("d: describe app");
-    lines.push("esc: back to project list");
-    return lines.join("\n");
-  }
-
-  if (view.kind === "app-policies") {
-    lines.push(`App: ${view.scope.appName}`);
-    lines.push(`Selected policy: ${item.name || ""}`);
-    lines.push(`Type: ${item.type || ""}`);
-    lines.push(`Env: ${item.envName || ""}`);
-    lines.push(`Updated: ${item.updateTime || ""}`);
-    lines.push("");
-    lines.push("d: describe policy");
-    lines.push("e: edit policy");
-    lines.push("esc: back to app list");
-    return lines.join("\n");
-  }
-
-  if (view.rootResource === "envs") {
-    lines.push(`Selected: ${item.name || ""}`);
-    lines.push(`Project: ${item.project?.name || ""}`);
-    lines.push(`Namespace: ${item.namespace || ""}`);
-    lines.push(`Targets: ${(item.targets || []).map((target) => target.name).join(", ")}`);
-    lines.push("");
-    lines.push("d: describe env");
-    return lines.join("\n");
-  }
-
-  if (view.rootResource === "definitions") {
-    lines.push(`Selected: ${item.name || ""}`);
-    lines.push(`Type: ${item.workloadType || ""}`);
-    lines.push(`Status: ${item.status || ""}`);
-    lines.push(`Addon: ${item.ownerAddon || ""}`);
-    lines.push("");
-    lines.push("d: describe definition");
-    return lines.join("\n");
-  }
-
-  if (view.rootResource === "addons") {
-    lines.push(`Selected: ${item.name || ""}`);
-    lines.push(`Phase: ${item.phase || ""}`);
-    lines.push(`Description: ${item.description || ""}`);
-    lines.push("");
-    lines.push("d: describe addon");
-    return lines.join("\n");
-  }
-
-  lines.push(`Selected: ${view.getId(item)}`);
-  lines.push("");
-  lines.push("d: describe selection");
-  return lines.join("\n");
-}
-
 async function runTui(options = {}) {
   const initialResource = normalizeResourceKey(options.resource);
   const client = new VelaClient({
@@ -559,16 +534,12 @@ async function runTui(options = {}) {
 
   await client.login();
 
-  const mouseEnabled = process.platform !== "win32";
   const screenOptions = {
-    smartCSR: process.platform !== "win32",
-    fullUnicode: false,
+    smartCSR: true,
+    fullUnicode: true,
+    forceUnicode: process.platform === "win32",
     title: "vela-cli tui",
   };
-
-  if (process.platform === "win32") {
-    screenOptions.terminal = "windows-ansi";
-  }
 
   const screen = blessed.screen(screenOptions);
 
@@ -584,6 +555,7 @@ async function runTui(options = {}) {
     statusText: "Ready",
     currentVisibleItems: [],
     suppressSelectionEvent: false,
+    inputMode: null,
   };
 
   const header = blessed.box({
@@ -591,36 +563,95 @@ async function runTui(options = {}) {
     top: 0,
     left: 0,
     width: "100%",
-    height: 4,
+    height: 8,
     tags: true,
-    border: "line",
     style: {
-      border: { fg: "cyan" },
+      bg: "#1b1625",
+      fg: "white",
     },
   });
 
-  const tabs = blessed.box({
+  const headerLeft = blessed.box({
+    parent: header,
+    top: 0,
+    left: 0,
+    width: "30%",
+    height: 7,
+    tags: true,
+    style: {
+      bg: "#1b1625",
+      fg: "white",
+    },
+  });
+
+  const headerCenter = blessed.box({
+    parent: header,
+    top: 0,
+    left: "30%",
+    width: "50%",
+    height: 7,
+    tags: true,
+    style: {
+      bg: "#1b1625",
+      fg: "white",
+    },
+  });
+
+  const headerRight = blessed.box({
+    parent: header,
+    top: 0,
+    right: 0,
+    width: "20%",
+    height: 7,
+    tags: true,
+    align: "center",
+    valign: "middle",
+    style: {
+      bg: "#1b1625",
+      fg: "yellow",
+    },
+  });
+
+  const headerDivider = blessed.box({
+    parent: header,
+    bottom: 0,
+    left: 0,
+    width: "100%",
+    height: 1,
+    tags: true,
+    style: {
+      bg: "#1b1625",
+      fg: "cyan",
+    },
+  });
+
+  const searchInput = blessed.textbox({
     parent: screen,
-    top: 4,
+    top: 5,
     left: 0,
     width: "100%",
     height: 3,
-    tags: true,
+    hidden: true,
     border: "line",
+    inputOnFocus: false,
+    keys: true,
+    mouse: true,
+    tags: true,
     style: {
-      border: { fg: "blue" },
+      border: { fg: "yellow" },
     },
   });
 
   const resourceTable = blessed.listtable({
     parent: screen,
-    top: 7,
+    top: 8,
     left: 0,
-    width: "48%",
-    height: "100%-10",
+    width: "100%",
+    height: "100%-8",
     keys: true,
     vi: true,
-    mouse: mouseEnabled,
+    mouse: true,
+    tags: true,
     border: "line",
     align: "left",
     noCellBorders: true,
@@ -634,64 +665,19 @@ async function runTui(options = {}) {
     },
   });
 
-  const detail = blessed.box({
-    parent: screen,
-    top: 7,
-    left: "48%",
-    width: "52%",
-    height: "100%-10",
-    border: "line",
-    mouse: mouseEnabled,
-    scrollable: true,
-    alwaysScroll: true,
-    scrollbar: {
-      ch: " ",
-      inverse: true,
-    },
-    style: {
-      border: { fg: "yellow" },
-    },
-  });
-
-  const footer = blessed.box({
-    parent: screen,
-    bottom: 0,
-    left: 0,
-    width: "100%",
-    height: 3,
-    tags: true,
-    border: "line",
-    style: {
-      border: { fg: "magenta" },
-    },
-  });
-
-  const prompt = blessed.prompt({
-    parent: screen,
-    top: "center",
-    left: "center",
-    width: "60%",
-    height: 8,
-    label: " Filter ",
-    border: "line",
-    style: {
-      border: { fg: "cyan" },
-    },
-  });
-
   const help = blessed.box({
     parent: screen,
     top: "center",
     left: "center",
     width: "72%",
-    height: 16,
+    height: 18,
     hidden: true,
     border: "line",
     scrollable: true,
     alwaysScroll: true,
     keys: true,
     vi: true,
-    mouse: mouseEnabled,
+    mouse: true,
     label: " Help ",
     content: [
       "{bold}vela-cli tui{/bold}",
@@ -718,7 +704,6 @@ async function runTui(options = {}) {
       "  [up/down] or [j/k] move selection",
       "  [enter] drill down into the selected row",
       "  [d] describe the selected row",
-      "  [e] edit the selected policy and submit it",
       "  [esc] / [left] / [backspace] go back one level",
       "  [y] toggle describe format between YAML and JSON",
       "  [r] refresh the current view",
@@ -746,7 +731,7 @@ async function runTui(options = {}) {
     alwaysScroll: true,
     keys: true,
     vi: true,
-    mouse: mouseEnabled,
+    mouse: true,
     scrollbar: {
       ch: " ",
       inverse: true,
@@ -774,22 +759,27 @@ async function runTui(options = {}) {
 
   function setStatus(text) {
     state.statusText = text;
-    renderFooter();
+    renderTopBar();
+  }
+
+  function isInputActive() {
+    return state.inputMode !== null && !searchInput.hidden;
   }
 
   function hasOpenOverlay() {
-    return !prompt.hidden || !help.hidden || !modal.hidden;
+    return isInputActive() || !help.hidden || !modal.hidden;
   }
 
   function getVisibleItems(view = getCurrentView()) {
-    const filter = getViewFilter(view).trim().toLowerCase();
+    const filter = getViewFilter(view).trim();
     const items = getViewItems(view);
+    const matcher = buildFilterMatcher(filter);
 
-    if (!filter) {
+    if (!matcher) {
       return items;
     }
 
-    return items.filter((item) => view.getSearchText(item).toLowerCase().includes(filter));
+    return items.filter((item) => matcher.matches(view, item));
   }
 
   function ensureSelectedId(view = getCurrentView()) {
@@ -813,47 +803,98 @@ async function runTui(options = {}) {
   }
 
   function renderHeader() {
-    const currentView = getCurrentView();
-    const baseUrl = truncateCell(client.baseUrl, 54);
-    const userLabel = state.headerUser ? ` | user: ${truncateCell(state.headerUser, 24)}` : "";
-    const updatedLabel = state.lastUpdated ? ` | updated: ${state.lastUpdated}` : "";
-    header.setContent(
-      `{bold}vela-cli tui{/bold}  k9s-inspired terminal UI\nbase: ${baseUrl}${userLabel}${updatedLabel}\nscope: ${currentView.breadcrumb}`,
-    );
+    renderTopBar();
   }
 
   function renderTabs() {
-    const currentRoot = getCurrentView().rootResource;
-    const tabText = RESOURCE_ORDER.map((resourceKey, index) => {
-      const label = ROOT_RESOURCE_DEFINITIONS[resourceKey].label;
-      const count = (state.itemsByViewId[`root:${resourceKey}`] || []).length;
-      if (resourceKey === currentRoot) {
-        return `{black-bg}{white-fg} ${index + 1}:${label} (${count}) {/white-fg}{/black-bg}`;
-      }
-      return ` ${index + 1}:${label} (${count}) `;
-    }).join(" ");
-
-    tabs.setContent(tabText);
+    renderTopBar();
   }
 
   function renderFooter() {
-    const currentView = getCurrentView();
-    const filter = getViewFilter(currentView);
-    const filterText = filter ? ` filter:${truncateCell(filter, 20)}` : "";
-    const canDrill = Boolean(currentView.canEnter);
-    const canGoBack = state.viewStack.length > 1;
-    const editHint = currentView.kind === "app-policies" ? "  [e] edit" : "";
-    footer.setContent(
-      `[1-5] resource  [tab] next  [enter] ${canDrill ? "drill" : "-"}  [d] describe${editHint}  [esc] ${canGoBack ? "back" : "-"}  [/] filter  [y] ${state.describeFormat.toUpperCase()}  [r] refresh  [q] quit${filterText}\n${state.statusText}`,
-    );
   }
 
-  function renderPreview() {
+  function renderSearchBar() {
+    renderTopBar();
+  }
+
+  function renderTopBar() {
+    if (isInputActive()) {
+      return;
+    }
+
     const currentView = getCurrentView();
     const selectedItem = getCurrentSelection();
-    detail.setLabel(" Preview ");
-    detail.setContent(buildPreview(currentView, selectedItem, state.currentVisibleItems));
-    detail.setScroll(0);
+    const currentRoot = currentView.rootResource;
+    const contextLabel = truncateCell(extractContextLabel(client.baseUrl), 28);
+    const userLabel = truncateCell(state.headerUser || "<unknown>", 24);
+    const selectedLabel = selectedItem ? currentView.getId(selectedItem) : "<none>";
+    const filter = getViewFilter(currentView);
+    const filterLabel = filter ? `/${filter}` : "<none>";
+    const totalCount = getViewItems(currentView).length;
+    const dividerWidth = Math.max((screen.width || 1) - 1, 1);
+    const rootEntries = RESOURCE_ORDER.map((resourceKey, index) => {
+      const shortcut = `{magenta-fg}<${index + 1}>{/magenta-fg}`;
+      const count = (state.itemsByViewId[`root:${resourceKey}`] || []).length;
+      const label = `${resourceKey}`;
+      if (resourceKey === currentRoot) {
+        return `${shortcut} {cyan-fg}${label}{/cyan-fg}{white-fg}[${count}]{/white-fg}`;
+      }
+      return `${shortcut} ${label}`;
+    });
+    const actionEntries = [
+      ["<:>", "Cmd"],
+      ["</>", "Filter"],
+      ["<enter>", "Open"],
+      ["<esc>", "Back"],
+      ["<d>", "Describe"],
+      ["<tab>", "Next"],
+      ["<r>", "Refresh"],
+      ["<y>", `Fmt ${state.describeFormat.toUpperCase()}`],
+      ["<?>", "Help"],
+      ["<q>", "Quit"],
+      ["<1-5>", "Views"],
+      ["<po>", "Policies"],
+    ];
+    const commandColumns = [[], [], [], []];
+
+    rootEntries.forEach((entry, index) => {
+      commandColumns[index % 4].push(entry);
+    });
+    actionEntries.forEach((entry, index) => {
+      const [hotkey, label] = entry;
+      commandColumns[index % 4].push(`{blue-fg}${hotkey}{/blue-fg} ${label}`);
+    });
+
+    const maxRows = Math.max(...commandColumns.map((column) => column.length));
+    const centerLines = [];
+    for (let rowIndex = 0; rowIndex < maxRows; rowIndex += 1) {
+      const columns = commandColumns.map((column) => padDisplayWidth(column[rowIndex] || "", 18));
+      centerLines.push(columns.join("  "));
+    }
+
+    headerLeft.setContent(
+      [
+        `{yellow-fg}Context:{/yellow-fg} ${contextLabel}`,
+        `{yellow-fg}View:{/yellow-fg}    ${truncateCell(currentView.label, 24)}`,
+        `{yellow-fg}User:{/yellow-fg}    ${userLabel}`,
+        `{yellow-fg}Mode:{/yellow-fg}    ${state.describeFormat.toUpperCase()}`,
+        `{yellow-fg}Rows:{/yellow-fg}    ${state.currentVisibleItems.length}/${totalCount}`,
+        `{yellow-fg}Find:{/yellow-fg}    ${truncateCell(filterLabel, 24)}`,
+        `{yellow-fg}Sel:{/yellow-fg}     ${truncateCell(selectedLabel, 24)}`,
+      ].join("\n"),
+    );
+
+    headerCenter.setContent(centerLines.join("\n"));
+    headerRight.setContent(
+      [
+        "{yellow-fg} _    ______{/yellow-fg}",
+        "{yellow-fg}| |  / / __ \\/{/yellow-fg}",
+        "{yellow-fg}| | / / /_/ /{/yellow-fg}",
+        "{yellow-fg}| |/ / ____/ {/yellow-fg}",
+        "{yellow-fg}|___/_/      {/yellow-fg}",
+      ].join("\n"),
+    );
+    headerDivider.setContent(buildHeaderStatusLine(state.statusText, dividerWidth));
   }
 
   function renderTable() {
@@ -861,23 +902,28 @@ async function runTui(options = {}) {
     state.currentVisibleItems = getVisibleItems(currentView);
     ensureSelectedId(currentView);
 
-    resourceTable.setLabel(` ${currentView.label} `);
+    const totalCount = getViewItems(currentView).length;
+    const activeFilter = getViewFilter(currentView);
+    const filterSuffix = activeFilter ? ` /${truncateCell(activeFilter, 18)}` : "";
+
+    resourceTable.setLabel(` ${currentView.label} [${state.currentVisibleItems.length}/${totalCount}]${filterSuffix} `);
     state.suppressSelectionEvent = true;
-    resourceTable.setData(buildRows(currentView, state.currentVisibleItems));
+    const rows = buildRows(currentView, state.currentVisibleItems);
+    if (state.currentVisibleItems.length === 0) {
+      rows.push(
+        buildPlaceholderRow(
+          currentView.columns,
+          totalCount > 0 ? "No rows match the current filter." : "No rows available in this view.",
+        ),
+      );
+    }
+    resourceTable.setData(rows);
 
     const selectedId = getSelectedId(currentView);
     const selectedIndex = state.currentVisibleItems.findIndex((item) => currentView.getId(item) === selectedId);
     resourceTable.select(selectedIndex >= 0 ? selectedIndex + 1 : 1);
     state.suppressSelectionEvent = false;
-
-    if (state.currentVisibleItems.length === 0) {
-      detail.setLabel(" Preview ");
-      detail.setContent(`Scope: ${currentView.breadcrumb}\n\nNo rows match the current filter.`);
-      detail.setScroll(0);
-      return;
-    }
-
-    renderPreview();
+    renderSearchBar();
   }
 
   async function refreshHeaderIdentity() {
@@ -896,8 +942,6 @@ async function runTui(options = {}) {
     const currentView = getCurrentView();
     const previousSelection = getSelectedId(currentView);
     setStatus(`Loading ${currentView.label.toLowerCase()}...`);
-    detail.setLabel(" Preview ");
-    detail.setContent("Loading list...");
     screen.render();
 
     try {
@@ -925,12 +969,15 @@ async function runTui(options = {}) {
     } catch (error) {
       state.suppressSelectionEvent = true;
       resourceTable.setLabel(` ${currentView.label} `);
-      resourceTable.setData([["ERROR"], [truncateCell(summarizeError(error), 60)]]);
+      resourceTable.setData([
+        currentView.columns.map((column) => column.title),
+        buildPlaceholderRow(currentView.columns, `Load failed: ${summarizeError(error)}`),
+      ]);
       resourceTable.select(1);
       state.suppressSelectionEvent = false;
-      detail.setLabel(" Preview ");
-      detail.setContent(`Scope: ${currentView.breadcrumb}\n\nLoad failed:\n${summarizeError(error)}`);
-      detail.setScroll(0);
+      state.currentVisibleItems = [];
+      renderHeader();
+      renderTabs();
       setStatus(`Load failed: ${summarizeError(error)}`);
       screen.render();
     }
@@ -1050,57 +1097,6 @@ async function runTui(options = {}) {
     }
   }
 
-  async function editSelectedPolicy() {
-    const currentView = getCurrentView();
-    const selectedItem = getCurrentSelection();
-
-    if (!selectedItem) {
-      setStatus("Nothing selected.");
-      screen.render();
-      return;
-    }
-
-    if (currentView.kind !== "app-policies") {
-      setStatus("Edit is available only in the policies view.");
-      screen.render();
-      return;
-    }
-
-    const appName = currentView.scope.appName;
-    const policyName = selectedItem.name;
-
-    try {
-      setStatus(`Editing policy ${policyName}...`);
-      screen.render();
-      screen.leave();
-
-      const result = await policyEdit.editPolicyInteractively(client, appName, policyName);
-
-      screen.enter();
-      resourceTable.focus();
-      renderHeader();
-      renderTabs();
-      renderFooter();
-      screen.render();
-
-      await loadCurrentView({ force: true });
-      setStatus(
-        result.changed
-          ? `Updated policy ${policyName}. Backup: ${truncateCell(result.backupPath || "", 42)}`
-          : `Policy ${policyName} unchanged`,
-      );
-      screen.render();
-    } catch (error) {
-      screen.enter();
-      resourceTable.focus();
-      renderHeader();
-      renderTabs();
-      renderFooter();
-      setStatus(`Edit failed: ${summarizeError(error)}`);
-      screen.render();
-    }
-  }
-
   function closeModal() {
     modal.hide();
     resourceTable.focus();
@@ -1118,21 +1114,212 @@ async function runTui(options = {}) {
     screen.render();
   }
 
-  function setFilter() {
+  async function applyFilterToView(view, normalized) {
+    buildFilterMatcher(normalized);
+    state.filterByViewId[view.id] = normalized;
+    renderTable();
+    setStatus(normalized ? `Applied filter to ${view.label.toLowerCase()}` : `Cleared filter for ${view.label.toLowerCase()}`);
+    screen.render();
+  }
+
+  function openCommandInput() {
+    state.inputMode = "command";
+    searchInput.setLabel(" Command ");
+    searchInput.setValue(":");
+    searchInput.show();
+    searchInput.focus();
+    screen.render();
+
+    searchInput.readInput((error, value) => {
+      Promise.resolve()
+        .then(async () => {
+          searchInput.hide();
+          state.inputMode = null;
+          resourceTable.focus();
+          renderTopBar();
+
+          if (error) {
+            setStatus(`Command aborted: ${summarizeError(error)}`);
+            screen.render();
+            return;
+          }
+
+          const normalized = String(value || "").replace(/^:/, "").trim();
+          await runCommand(normalized);
+        })
+        .catch((commandError) => {
+          setStatus(`Command failed: ${summarizeError(commandError)}`);
+          screen.render();
+        });
+    });
+  }
+
+  function openFilterInput() {
     const currentView = getCurrentView();
-    prompt.input("Substring filter (blank clears)", getViewFilter(currentView), (error, value) => {
-      if (error) {
-        setStatus(`Filter aborted: ${summarizeError(error)}`);
+    state.inputMode = "filter";
+    searchInput.setLabel(" Filter ");
+    searchInput.setValue(`/${getViewFilter(currentView)}`);
+    searchInput.show();
+    searchInput.focus();
+    screen.render();
+
+    searchInput.readInput((error, value) => {
+      Promise.resolve()
+        .then(async () => {
+          searchInput.hide();
+          state.inputMode = null;
+          resourceTable.focus();
+          renderTopBar();
+
+          if (error) {
+            setStatus(`Filter aborted: ${summarizeError(error)}`);
+            screen.render();
+            return;
+          }
+
+          const normalized = String(value || "").replace(/^\//, "").trim();
+          await applyFilterToView(currentView, normalized);
+        })
+        .catch((inputError) => {
+          setStatus(`Filter invalid: ${summarizeError(inputError)}`);
+          screen.render();
+        });
+    });
+  }
+
+  function clearCurrentFilter() {
+    const currentView = getCurrentView();
+    if (!getViewFilter(currentView)) {
+      return false;
+    }
+
+    state.filterByViewId[currentView.id] = "";
+    renderTable();
+    setStatus(`Cleared filter for ${currentView.label.toLowerCase()}`);
+    screen.render();
+    return true;
+  }
+
+  async function resolveAppForCommand(appName) {
+    if (!appName) {
+      const currentView = getCurrentView();
+      const selectedItem = getCurrentSelection();
+
+      if ((currentView.kind === "root" && currentView.rootResource === "apps") || currentView.kind === "project-apps") {
+        return selectedItem;
+      }
+
+      if (currentView.kind === "app-policies") {
+        return {
+          name: currentView.scope.appName,
+          alias: currentView.scope.appAlias,
+          project: { name: currentView.scope.projectName },
+          updateTime: currentView.scope.updateTime,
+        };
+      }
+
+      return null;
+    }
+
+    let apps = state.itemsByViewId["root:apps"];
+    if (!apps) {
+      apps = await fetchApplications(client);
+      state.itemsByViewId["root:apps"] = apps;
+    }
+
+    const normalizedName = appName.toLowerCase();
+    return (
+      apps.find((item) => String(item.name || "").toLowerCase() === normalizedName) ||
+      apps.find((item) => String(item.alias || "").toLowerCase() === normalizedName) ||
+      null
+    );
+  }
+
+  async function openPoliciesFromCommand(app, filterText) {
+    const nextView = createAppPoliciesView(app, {
+      rootResource: "apps",
+    });
+
+    state.viewStack = [createRootView("apps"), nextView];
+    renderHeader();
+    renderTabs();
+    renderSearchBar();
+    screen.render();
+
+    if (!state.itemsByViewId[nextView.id]) {
+      await loadCurrentView();
+    } else {
+      renderTable();
+    }
+
+    if (filterText) {
+      await applyFilterToView(nextView, filterText);
+      setStatus(`Opened policies for ${app.name} with filter /${filterText}`);
+      screen.render();
+      return;
+    }
+
+    setStatus(`Opened policies for ${app.name}`);
+    screen.render();
+  }
+
+  async function runCommand(rawCommand) {
+    const command = String(rawCommand || "").trim();
+    if (!command) {
+      setStatus("Command cancelled");
+      screen.render();
+      return;
+    }
+
+    if (["q", "quit", "exit"].includes(command.toLowerCase())) {
+      screen.destroy();
+      process.exit(0);
+    }
+
+    if (["?", "help"].includes(command.toLowerCase())) {
+      toggleHelp();
+      return;
+    }
+
+    const [head, ...rest] = command.split(/\s+/);
+    const target = resolveResourceCommand(head);
+    if (!target) {
+      setStatus(`Unknown command ':${head}'. Try :a, :prj, :e, :def, :ao, :po <app>, or :q.`);
+      screen.render();
+      return;
+    }
+
+    if (target === "policies") {
+      let appName = rest[0] || "";
+      let filterParts = rest.slice(1);
+      if (appName.startsWith("/")) {
+        filterParts = rest;
+        appName = "";
+      }
+
+      const filterText = filterParts.join(" ").trim().replace(/^\//, "").trim();
+      const app = await resolveAppForCommand(appName || null);
+      if (!app) {
+        setStatus(appName ? `App '${appName}' was not found.` : "Select an app first or use :po <app>.");
         screen.render();
         return;
       }
 
-      state.filterByViewId[currentView.id] = (value || "").trim();
-      renderTable();
-      renderFooter();
-      setStatus(`Updated filter for ${currentView.label.toLowerCase()}`);
+      await openPoliciesFromCommand(app, filterText);
+      return;
+    }
+
+    const filterText = rest.join(" ").trim().replace(/^\//, "").trim();
+    await switchRootResource(target);
+    if (filterText) {
+      await applyFilterToView(getCurrentView(), filterText);
+      setStatus(`Switched to ${ROOT_RESOURCE_DEFINITIONS[target].label.toLowerCase()} with filter /${filterText}`);
       screen.render();
-    });
+      return;
+    }
+
+    setStatus(`Switched to ${ROOT_RESOURCE_DEFINITIONS[target].label.toLowerCase()}`);
+    screen.render();
   }
 
   resourceTable.on("select item", (item, index) => {
@@ -1148,8 +1335,7 @@ async function runTui(options = {}) {
 
     const currentView = getCurrentView();
     state.selectedIdByViewId[currentView.id] = currentView.getId(visibleItem);
-    renderPreview();
-    renderFooter();
+    renderSearchBar();
     screen.render();
   });
 
@@ -1171,7 +1357,7 @@ async function runTui(options = {}) {
   });
 
   screen.key(["q"], () => {
-    if (!prompt.hidden) {
+    if (isInputActive()) {
       return;
     }
     if (!help.hidden) {
@@ -1209,22 +1395,29 @@ async function runTui(options = {}) {
     });
   });
 
+  screen.key([":"], () => {
+    if (hasOpenOverlay()) {
+      return;
+    }
+    openCommandInput();
+  });
+
   screen.key(["/"], () => {
     if (hasOpenOverlay()) {
       return;
     }
-    setFilter();
+    openFilterInput();
   });
 
   screen.key(["?"], () => {
-    if (!prompt.hidden || !modal.hidden) {
+    if (isInputActive() || !modal.hidden) {
       return;
     }
     toggleHelp();
   });
 
   screen.key(["escape", "left", "backspace"], async () => {
-    if (!prompt.hidden) {
+    if (isInputActive()) {
       return;
     }
     if (!modal.hidden) {
@@ -1233,6 +1426,9 @@ async function runTui(options = {}) {
     }
     if (!help.hidden) {
       toggleHelp();
+      return;
+    }
+    if (clearCurrentFilter()) {
       return;
     }
     await goBack();
@@ -1246,11 +1442,13 @@ async function runTui(options = {}) {
   });
 
   screen.key(["y"], async () => {
-    if (!prompt.hidden || !help.hidden) {
+    if (isInputActive() || !help.hidden) {
       return;
     }
     state.describeFormat = state.describeFormat === "yaml" ? "json" : "yaml";
-    renderFooter();
+    renderHeader();
+    renderTabs();
+    renderSearchBar();
     if (!modal.hidden) {
       await openDescribe(true);
       return;
@@ -1267,13 +1465,6 @@ async function runTui(options = {}) {
       return;
     }
     await openDescribe(false);
-  });
-
-  screen.key(["e"], async () => {
-    if (hasOpenOverlay()) {
-      return;
-    }
-    await editSelectedPolicy();
   });
 
   screen.key(["enter"], async () => {

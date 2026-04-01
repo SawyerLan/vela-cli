@@ -102,7 +102,7 @@ The first version includes:
 - k9s-style drill-down navigation for `projects -> apps -> policies`
 - a single full-width resource table with no preview pane
 - a single compact top status area for context, commands, and search state
-- `enter` for drill-down, `d` for describe, and `e` for policy edit
+- `enter` for drill-down and `d` for describe
 - keyboard shortcuts for switching resources, filtering, refreshing, and going back up one level
 
 Useful keys:
@@ -114,7 +114,6 @@ Useful keys:
 - `j` / `k` or arrow keys: move selection
 - `enter`: drill down into the selected row
 - `d`: describe the selected row
-- `e`: edit the selected policy in the policies view
 - `esc` / `left` / `backspace`: go back one level
 - `y`: toggle detail format between YAML and JSON
 - `r`: refresh the current resource
@@ -127,12 +126,13 @@ Useful command examples:
 - `:prj` or `:projects` to switch to projects
 - `:po <app>` to open policies for an app
 - `:apps /foo` to switch resource and immediately apply a filter
+
+Useful filter examples:
+
 - `/foo|bar` for regex filtering
 - `/! foo` for inverse regex filtering
 - `/-f abc` for fuzzy finding
 - `/-l key=value` for label filtering
-
-In the policies view, `e` uses the same flow as `vela-cli edit policy`: it opens a temp YAML manifest in your editor, writes a backup before any change, and submits the update when you save and exit. Outside the policies view, the TUI remains read-only.
 
 ## Policy Editing
 
