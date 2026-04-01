@@ -40,9 +40,10 @@ Then verify the install:
 
 ```bash
 vela-cli --help
-vela-cli apps
-vela-cli app-policies h3-devops
-vela-cli config-view h3-devops --env erp-test-hcloud-test-p1
+vela-cli get apps
+vela-cli get policies h3-devops --all
+vela-cli config view h3-devops --env erp-test-hcloud-test-p1
+vela-cli tui
 ```
 
 ## Option 2: Install From A Packed Tarball
@@ -126,17 +127,19 @@ For a persistent setup, add the matching line to `~/.bashrc` or `~/.zshrc`.
 
 ```bash
 vela-cli --help
-vela-cli apps
-vela-cli app-policies h3-devops
-vela-cli app-policies h3-devops --all
-vela-cli config-view h3-devops --env erp-test-hcloud-test-p1
-vela-cli config-view h3-devops --policy sdd-erp-test-idc-override
+vela-cli get apps
+vela-cli get app h3-devops
+vela-cli get policies h3-devops --all
+vela-cli config view h3-devops --env erp-test-hcloud-test-p1
+vela-cli config view h3-devops --policy sdd-erp-test-idc-override
+vela-cli tui
+vela-cli tui --resource envs
 ```
 
 ## Notes
 
-- `app-policies` shows `override` policies by default.
-- `config-view` shows YAML by default.
+- `get policies <app>` shows `override` policies by default.
+- `config view` shows YAML by default.
+- `tui` is read-only and opens a k9s-inspired terminal UI for browsing apps, projects, envs, definitions, and addons.
 - Use `--json` when you need machine-readable output.
-- The CLI is designed to stay read-only. It only logs in and performs `GET` requests for query commands.
-
+- Query commands and `tui` stay read-only. Mutating flows remain explicit commands.

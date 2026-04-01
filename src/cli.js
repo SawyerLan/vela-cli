@@ -1,24 +1,49 @@
 #!/usr/bin/env node
 
 const fs = require("node:fs/promises");
+const os = require("node:os");
 const path = require("node:path");
+const { spawn, spawnSync } = require("node:child_process");
 const { Command } = require("commander");
 const YAML = require("yaml");
 const { runCapture, DEFAULT_BASE_URL, DEFAULT_LOGIN_PATH } = require("./capture");
 const { VelaClient } = require("./api");
+const { RESOURCE_ORDER, runTui } = require("./tui");
 
 const OUTPUT_FORMATS = new Set(["table", "json", "yaml"]);
 const AUTH_VALUE_OPTIONS = new Set([
   "--base-url",
   "--login-path",
+  "--token",
   "-o",
   "--output",
   "--env",
   "--policy",
+  "--workflow",
   "--type",
+  "--editor",
+  "--resource",
+  "-f",
+  "--filename",
+  "--app",
 ]);
+const EDITABLE_POLICY_API_VERSION = "vela-cli.dev/v1alpha1";
+const EDITABLE_POLICY_KIND = "Policy";
+const EDITABLE_POLICY_FIELDS = ["alias", "type", "description", "envName", "properties", "workflowPolicyBind"];
 
-const TOP_LEVEL_COMMANDS = ["capture", "endpoints", "get", "describe", "config", "completion", "help"];
+const TOP_LEVEL_COMMANDS = [
+  "capture",
+  "endpoints",
+  "get",
+  "describe",
+  "edit",
+  "apply",
+  "deploy",
+  "config",
+  "tui",
+  "completion",
+  "help",
+];
 const SUBCOMMANDS = {
   get: [
     "me",
@@ -36,42 +61,63 @@ const SUBCOMMANDS = {
     "raw",
   ],
   describe: ["app", "policy"],
+  deploy: ["app"],
+  edit: ["policy"],
   config: ["view"],
 };
 
 const COMMAND_OPTIONS = {
   capture: ["--base-url", "--login-path", "--headed"],
+  apply: ["--base-url", "--login-path", "--token", "-o", "--output", "--json", "-f", "--filename", "--app"],
+  deploy: [],
   endpoints: [],
+  tui: ["--base-url", "--login-path", "--token", "--resource"],
   completion: [],
   get: [],
   describe: [],
+  edit: [],
   config: [],
-  "get me": ["--base-url", "--login-path", "-o", "--output", "--json"],
-  "get projects": ["--base-url", "--login-path", "-o", "--output", "--json"],
-  "get apps": ["--base-url", "--login-path", "-o", "--output", "--json"],
-  "get app": ["--base-url", "--login-path", "-o", "--output", "--json"],
-  "get components": ["--base-url", "--login-path", "-o", "--output", "--json"],
+  "get me": ["--base-url", "--login-path", "--token", "-o", "--output", "--json"],
+  "get projects": ["--base-url", "--login-path", "--token", "-o", "--output", "--json"],
+  "get apps": ["--base-url", "--login-path", "--token", "-o", "--output", "--json"],
+  "get app": ["--base-url", "--login-path", "--token", "-o", "--output", "--json"],
+  "get components": ["--base-url", "--login-path", "--token", "-o", "--output", "--json"],
   "get policies": [
     "--base-url",
     "--login-path",
+    "--token",
     "-o",
     "--output",
     "--json",
     "--all",
     "--type",
   ],
-  "get policy": ["--base-url", "--login-path", "-o", "--output", "--json"],
-  "get revisions": ["--base-url", "--login-path", "-o", "--output", "--json"],
-  "get envs": ["--base-url", "--login-path", "-o", "--output", "--json"],
-  "get definitions": ["--base-url", "--login-path", "-o", "--output", "--json"],
-  "get addons": ["--base-url", "--login-path", "-o", "--output", "--json"],
-  "get system-info": ["--base-url", "--login-path", "-o", "--output", "--json"],
-  "get raw": ["--base-url", "--login-path", "-o", "--output", "--json"],
-  "describe app": ["--base-url", "--login-path", "-o", "--output", "--json"],
-  "describe policy": ["--base-url", "--login-path", "-o", "--output", "--json"],
+  "get policy": ["--base-url", "--login-path", "--token", "-o", "--output", "--json"],
+  "get revisions": ["--base-url", "--login-path", "--token", "-o", "--output", "--json"],
+  "get envs": ["--base-url", "--login-path", "--token", "-o", "--output", "--json"],
+  "get definitions": ["--base-url", "--login-path", "--token", "-o", "--output", "--json"],
+  "get addons": ["--base-url", "--login-path", "--token", "-o", "--output", "--json"],
+  "get system-info": ["--base-url", "--login-path", "--token", "-o", "--output", "--json"],
+  "get raw": ["--base-url", "--login-path", "--token", "-o", "--output", "--json"],
+  "describe app": ["--base-url", "--login-path", "--token", "-o", "--output", "--json"],
+  "describe policy": ["--base-url", "--login-path", "--token", "-o", "--output", "--json"],
+  "deploy app": [
+    "--base-url",
+    "--login-path",
+    "--token",
+    "-o",
+    "--output",
+    "--json",
+    "--workflow",
+    "--policy",
+    "--env",
+    "--force",
+  ],
+  "edit policy": ["--base-url", "--login-path", "--token", "-o", "--output", "--json", "--editor"],
   "config view": [
     "--base-url",
     "--login-path",
+    "--token",
     "-o",
     "--output",
     "--json",
@@ -102,6 +148,7 @@ function addAuthOptions(command, outputFormats = "table, json, yaml") {
   return command
     .option("--base-url <url>", "Vela base URL", DEFAULT_BASE_URL)
     .option("--login-path <path>", "Login API path", DEFAULT_LOGIN_PATH)
+    .option("--token <token>", "Vela bearer token (or set VELA_TOKEN)")
     .option("-o, --output <format>", `Output format: ${outputFormats}`)
     .option("--json", "Alias for --output json", false);
 }
@@ -110,6 +157,7 @@ function buildClient(options) {
   return new VelaClient({
     baseUrl: options.baseUrl,
     loginPath: options.loginPath,
+    token: options.token,
     username: options.username,
     password: options.password,
   });
@@ -229,6 +277,8 @@ function parseCompletionContext(words, currentIndex) {
         auth.baseUrl = token;
       } else if (expectingValueFor === "--login-path") {
         auth.loginPath = token;
+      } else if (expectingValueFor === "--token") {
+        auth.token = token;
       }
       expectingValueFor = null;
       continue;
@@ -260,6 +310,7 @@ function buildClientFromParsedAuth(auth) {
   return new VelaClient({
     baseUrl: auth.baseUrl,
     loginPath: auth.loginPath,
+    token: auth.token,
     username: auth.username,
     password: auth.password,
   });
@@ -288,15 +339,28 @@ async function getOverrideEnvNames(client, appName) {
     .filter(Boolean);
 }
 
+function uniqueNonEmpty(items) {
+  return Array.from(new Set(items.filter(Boolean))).sort();
+}
+
+function getWorkflowNamesFromPolicy(policy) {
+  return uniqueNonEmpty((policy.workflowPolicyBind || []).map((item) => item.name));
+}
+
+async function getEnvNames(client, appName) {
+  const policies = await getApplicationPolicies(client, appName);
+  return uniqueNonEmpty(policies.map((policy) => policy.envName));
+}
+
 async function getDynamicCompletions(context) {
   const client = buildClientFromParsedAuth(context.auth);
 
-  if (!client.username || !client.password) {
+  if (!client.token && (!client.username || !client.password)) {
     return [];
   }
 
   if (
-    ["get app", "describe app", "get components", "get policies", "get revisions", "config view"].includes(
+    ["get app", "describe app", "get components", "get policies", "get revisions", "config view", "deploy app"].includes(
       context.commandKey,
     )
   ) {
@@ -305,7 +369,7 @@ async function getDynamicCompletions(context) {
     }
   }
 
-  if (["get policy", "describe policy"].includes(context.commandKey)) {
+  if (["get policy", "describe policy", "edit policy"].includes(context.commandKey)) {
     if (context.positionals.length === 0) {
       return getApplicationNames(client);
     }
@@ -327,6 +391,23 @@ async function getDynamicCompletions(context) {
     }
   }
 
+  if (context.commandKey === "deploy app") {
+    const appName = context.positionals[0];
+    if (!appName) {
+      return getApplicationNames(client);
+    }
+    if (context.previous === "--policy") {
+      return getPolicyNames(client, appName);
+    }
+    if (context.previous === "--env") {
+      return getEnvNames(client, appName);
+    }
+  }
+
+  if (context.commandKey === "apply" && context.previous === "--app") {
+    return getApplicationNames(client);
+  }
+
   return [];
 }
 
@@ -341,6 +422,10 @@ function getStaticCompletions(context) {
 
   if (context.current.startsWith("-")) {
     return COMMAND_OPTIONS[context.commandKey] || [];
+  }
+
+  if (context.topLevel === "tui" && context.previous === "--resource") {
+    return RESOURCE_ORDER;
   }
 
   if (context.topLevel === "completion") {
@@ -421,6 +506,366 @@ function getCompletionScript(shellName) {
 
 function findOverridePolicy(policies, envName) {
   return policies.find((policy) => policy.type === "override" && policy.envName === envName);
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function buildEditablePolicyState(appName, policy) {
+  return {
+    application: appName,
+    name: policy.name,
+    alias: policy.alias ?? "",
+    type: policy.type ?? "",
+    description: policy.description ?? "",
+    envName: policy.envName ?? "",
+    properties: policy.properties ?? {},
+    workflowPolicyBind: policy.workflowPolicyBind ?? [],
+  };
+}
+
+function buildEditablePolicyManifest(appName, policy) {
+  const state = buildEditablePolicyState(appName, policy);
+  return {
+    apiVersion: EDITABLE_POLICY_API_VERSION,
+    kind: EDITABLE_POLICY_KIND,
+    metadata: {
+      application: state.application,
+      name: state.name,
+    },
+    spec: {
+      alias: state.alias,
+      type: state.type,
+      description: state.description,
+      envName: state.envName,
+      properties: state.properties,
+      workflowPolicyBind: state.workflowPolicyBind,
+    },
+  };
+}
+
+function padTimestamp(value) {
+  return String(value).padStart(2, "0");
+}
+
+function formatTimestampForFilename(date = new Date()) {
+  return [
+    date.getFullYear(),
+    padTimestamp(date.getMonth() + 1),
+    padTimestamp(date.getDate()),
+    "-",
+    padTimestamp(date.getHours()),
+    padTimestamp(date.getMinutes()),
+    padTimestamp(date.getSeconds()),
+  ].join("");
+}
+
+function sanitizeFilenameSegment(value) {
+  return String(value || "")
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || "unknown";
+}
+
+function getBackupRootDir() {
+  const homeDir = os.homedir();
+
+  if (process.platform === "win32") {
+    const baseDir =
+      process.env.LOCALAPPDATA ||
+      (homeDir ? path.join(homeDir, "AppData", "Local") : null);
+    if (!baseDir) {
+      throw new Error("Unable to resolve a local backup directory on Windows.");
+    }
+    return path.join(baseDir, "vela-cli", "backups");
+  }
+
+  if (process.platform === "linux") {
+    const baseDir =
+      process.env.XDG_STATE_HOME ||
+      (homeDir ? path.join(homeDir, ".local", "state") : null);
+    if (!baseDir) {
+      throw new Error("Unable to resolve a local backup directory on Linux.");
+    }
+    return path.join(baseDir, "vela-cli", "backups");
+  }
+
+  if (!homeDir) {
+    throw new Error("Unable to resolve a local backup directory.");
+  }
+
+  return path.join(homeDir, ".vela-cli", "backups");
+}
+
+async function writePolicyBackup(appName, policy) {
+  const backupDir = path.join(getBackupRootDir(), sanitizeFilenameSegment(appName));
+  const filename = `${sanitizeFilenameSegment(policy.name)}-${formatTimestampForFilename()}.yaml`;
+  const backupPath = path.join(backupDir, filename);
+  const manifest = buildEditablePolicyManifest(appName, policy);
+
+  await fs.mkdir(backupDir, { recursive: true });
+  await fs.writeFile(backupPath, YAML.stringify(manifest, { indent: 2 }), "utf8");
+
+  return backupPath;
+}
+
+function normalizeEditablePolicyState(raw, defaults = {}) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Policy manifest must be a YAML object.");
+  }
+
+  const metadata =
+    raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata) ? raw.metadata : {};
+  const spec = raw.spec && typeof raw.spec === "object" && !Array.isArray(raw.spec) ? raw.spec : raw;
+  const state = {
+    application:
+      defaults.application ??
+      raw.application ??
+      raw.appName ??
+      metadata.application ??
+      metadata.appName ??
+      metadata.applicationName,
+    name: defaults.name ?? raw.name ?? metadata.name,
+  };
+
+  for (const field of EDITABLE_POLICY_FIELDS) {
+    if (hasOwn(spec, field)) {
+      state[field] = spec[field];
+    }
+  }
+
+  return state;
+}
+
+function mergeEditablePolicyState(base, overrides) {
+  const merged = { ...base };
+  if (overrides.application) {
+    merged.application = overrides.application;
+  }
+  if (overrides.name) {
+    merged.name = overrides.name;
+  }
+
+  for (const field of EDITABLE_POLICY_FIELDS) {
+    if (hasOwn(overrides, field)) {
+      merged[field] = overrides[field];
+    }
+  }
+
+  return merged;
+}
+
+function stableJson(value) {
+  return JSON.stringify(value);
+}
+
+function ensureJsonString(value, fieldName) {
+  if (typeof value !== "string") {
+    return JSON.stringify(value);
+  }
+
+  try {
+    JSON.parse(value);
+  } catch (error) {
+    throw new Error(`${fieldName} must be valid JSON when provided as a string: ${error.message}`);
+  }
+
+  return value;
+}
+
+function buildPolicyUpdatePayload(state) {
+  if (!state.application) {
+    throw new Error("Policy manifest is missing application. Set metadata.application or use --app.");
+  }
+  if (!state.name) {
+    throw new Error("Policy manifest is missing name. Set metadata.name or name.");
+  }
+
+  return {
+    alias: state.alias ?? "",
+    type: state.type ?? "",
+    description: state.description ?? "",
+    envName: state.envName ?? "",
+    properties: ensureJsonString(state.properties ?? {}, "properties"),
+    workflowPolicyBind: state.workflowPolicyBind ?? [],
+  };
+}
+
+function getPolicyApiPath(appName, policyName) {
+  return `/api/v1/applications/${encodeURIComponent(appName)}/policies/${encodeURIComponent(policyName)}`;
+}
+
+function getDeployApiPath(appName) {
+  return `/api/v1/applications/${encodeURIComponent(appName)}/deploy`;
+}
+
+function renderMutationObject(data, options, defaultFormat = "json") {
+  const format = resolveOutputFormat(options, defaultFormat);
+  if (format === "table") {
+    throw new Error("table output is not supported for this command.");
+  }
+  if (format === "json") {
+    printJson(data);
+    return;
+  }
+  printYaml(data);
+}
+
+function resolveWorkflowFromCandidates(sourceLabel, sourceValue, workflowNames) {
+  if (workflowNames.length === 0) {
+    throw new Error(`No workflow binding found for ${sourceLabel} '${sourceValue}'.`);
+  }
+
+  if (workflowNames.length > 1) {
+    throw new Error(
+      `${sourceLabel} '${sourceValue}' maps to multiple workflows (${workflowNames.join(", ")}). Use --workflow.`,
+    );
+  }
+
+  return workflowNames[0];
+}
+
+async function resolveDeployWorkflowName(client, appName, options) {
+  const selected = [options.workflow, options.policy, options.env].filter(Boolean);
+  if (selected.length !== 1) {
+    throw new Error("deploy app requires exactly one of --workflow, --policy, or --env.");
+  }
+
+  if (options.workflow) {
+    return options.workflow;
+  }
+
+  const policies = await getApplicationPolicies(client, appName);
+
+  if (options.policy) {
+    const policySummary = policies.find((item) => item.name === options.policy);
+    if (!policySummary) {
+      const available = uniqueNonEmpty(policies.map((item) => item.name));
+      throw new Error(
+        `Policy '${options.policy}' was not found in app '${appName}'. Available policies: ${available.join(", ") || "<none>"}`,
+      );
+    }
+    const policy = await client.getJson(getPolicyApiPath(appName, policySummary.name));
+    return resolveWorkflowFromCandidates("policy", options.policy, getWorkflowNamesFromPolicy(policy));
+  }
+
+  const matchedPolicySummaries = policies.filter((item) => item.envName === options.env);
+  if (matchedPolicySummaries.length === 0) {
+    const available = await getEnvNames(client, appName);
+    throw new Error(
+      `No policy with env '${options.env}' was found in app '${appName}'. Available envs: ${available.join(", ") || "<none>"}`,
+    );
+  }
+
+  const matchedPolicies = await Promise.all(
+    matchedPolicySummaries.map((policy) => client.getJson(getPolicyApiPath(appName, policy.name))),
+  );
+
+  return resolveWorkflowFromCandidates(
+    "env",
+    options.env,
+    uniqueNonEmpty(matchedPolicies.flatMap((policy) => getWorkflowNamesFromPolicy(policy))),
+  );
+}
+
+async function updateExistingPolicy(client, desiredState) {
+  const currentPolicy = await client.getJson(getPolicyApiPath(desiredState.application, desiredState.name));
+  const currentState = buildEditablePolicyState(desiredState.application, currentPolicy);
+  const mergedState = mergeEditablePolicyState(currentState, desiredState);
+
+  if (stableJson(currentState) === stableJson(mergedState)) {
+    return {
+      changed: false,
+      backupPath: null,
+      state: currentState,
+      response: currentPolicy,
+    };
+  }
+
+  const backupPath = await writePolicyBackup(desiredState.application, currentPolicy);
+
+  const response = await client.putJson(
+    getPolicyApiPath(mergedState.application, mergedState.name),
+    buildPolicyUpdatePayload(mergedState),
+  );
+
+  return {
+    changed: true,
+    backupPath,
+    state: mergedState,
+    response,
+  };
+}
+
+async function readYamlFile(filename) {
+  if (filename === "-") {
+    return new Promise((resolve, reject) => {
+      let content = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => {
+        content += chunk;
+      });
+      process.stdin.on("end", () => resolve(content));
+      process.stdin.on("error", reject);
+    });
+  }
+
+  return fs.readFile(filename, "utf8");
+}
+
+function resolveEditorCommand(editor) {
+  if (editor) {
+    return editor;
+  }
+  if (process.env.VELA_EDITOR) {
+    return process.env.VELA_EDITOR;
+  }
+  if (process.env.EDITOR) {
+    return process.env.EDITOR;
+  }
+  if (process.env.VISUAL) {
+    return process.env.VISUAL;
+  }
+  if (process.platform === "win32") {
+    const probe = spawnSync("where", ["vim"], {
+      stdio: "ignore",
+      shell: false,
+    });
+    return probe.status === 0 ? "vim" : "notepad";
+  }
+  return "vim";
+}
+
+async function openEditor(filePath, editor) {
+  const command = resolveEditorCommand(editor);
+
+  await new Promise((resolve, reject) => {
+    const child = spawn(command, [filePath], {
+      stdio: "inherit",
+      shell: true,
+    });
+
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`Editor exited with code ${code}`));
+    });
+  });
+}
+
+function renderMutationResult(result, options) {
+  if (result.changed) {
+    console.log(`policy/${result.response.name} configured`);
+    console.log(`backup: ${result.backupPath}`);
+    return;
+  }
+
+  console.log(`policy/${result.response.name} unchanged`);
 }
 
 async function handleCapture(options) {
@@ -669,11 +1114,67 @@ async function handleGetRaw(apiPath, options) {
   renderObject(data, options, "json");
 }
 
+async function handleEditPolicy(appName, policyName, options) {
+  const client = buildClient(options);
+  const currentPolicy = await client.getJson(getPolicyApiPath(appName, policyName));
+  const manifest = buildEditablePolicyManifest(appName, currentPolicy);
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "vela-policy-"));
+  const tempFile = path.join(tempDir, `${policyName}.yaml`);
+
+  try {
+    await fs.writeFile(tempFile, YAML.stringify(manifest, { indent: 2 }), "utf8");
+    await openEditor(tempFile, options.editor);
+
+    const editedRaw = await fs.readFile(tempFile, "utf8");
+    const editedManifest = YAML.parse(editedRaw);
+    const desiredState = normalizeEditablePolicyState(editedManifest, {
+      application: appName,
+      name: policyName,
+    });
+    const result = await updateExistingPolicy(client, desiredState);
+    renderMutationResult(result, options);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function handleApply(options) {
+  if (!options.filename) {
+    throw new Error("apply requires -f or --filename.");
+  }
+
+  const input = await readYamlFile(options.filename);
+  const manifest = YAML.parse(input);
+  const desiredState = normalizeEditablePolicyState(manifest, {
+    application: options.app,
+  });
+  const client = buildClient(options);
+  const result = await updateExistingPolicy(client, desiredState);
+  renderMutationResult(result, options);
+}
+
+async function handleTui(options) {
+  await runTui(options);
+}
+
+async function handleDeployApp(appName, options) {
+  const client = buildClient(options);
+  const workflowName = await resolveDeployWorkflowName(client, appName, options);
+  const response = await client.postJson(getDeployApiPath(appName), {
+    appName,
+    workflowName,
+    triggerType: "web",
+    force: Boolean(options.force),
+  });
+
+  renderMutationObject(response, options, "json");
+}
+
 const program = new Command();
 
 program
   .name("vela-cli")
-  .description("Read-only Vela request inspector with kubectl-style subcommands");
+  .description("Vela request inspector with kubectl-style get, deploy, edit, and apply subcommands");
 
 program
   .command("completion <shellName>")
@@ -708,8 +1209,19 @@ program
   .description("Print the latest captured endpoint summary")
   .action(handleEndpoints);
 
+program
+  .command("tui")
+  .description("Launch a k9s-inspired read-only terminal UI")
+  .option("--base-url <url>", "Vela base URL", DEFAULT_BASE_URL)
+  .option("--login-path <path>", "Login API path", DEFAULT_LOGIN_PATH)
+  .option("--token <token>", "Vela bearer token (or set VELA_TOKEN)")
+  .option("--resource <name>", `Initial resource: ${RESOURCE_ORDER.join(", ")}`, "apps")
+  .action(handleTui);
+
 const getCommand = program.command("get").description("List resources or fetch a single resource");
 const describeCommand = program.command("describe").description("Show detailed resource information");
+const deployCommand = program.command("deploy").description("Start an application deployment");
+const editCommand = program.command("edit").description("Edit an existing resource");
 const configCommand = program.command("config").description("Inspect application configuration");
 
 addAuthOptions(
@@ -756,6 +1268,23 @@ addAuthOptions(
 ).action(handleGetPolicy);
 
 addAuthOptions(
+  deployCommand.command("app <appName>").description("Deploy one application workflow"),
+  "json, yaml"
+)
+  .option("--workflow <workflowName>", "Deploy a specific workflow by name")
+  .option("--policy <policyName>", "Resolve the workflow from a bound policy")
+  .option("--env <envName>", "Resolve the workflow from an environment name")
+  .option("--force", "Force a deployment even when the server would normally skip it", false)
+  .action(handleDeployApp);
+
+addAuthOptions(
+  editCommand.command("policy <appName> <policyName>").description("Edit one existing application policy"),
+  "json, yaml"
+)
+  .option("--editor <command>", "Editor command to launch")
+  .action(handleEditPolicy);
+
+addAuthOptions(
   configCommand.command("view <appName>").description("Show override config by environment or policy name"),
   "json, yaml"
 )
@@ -788,6 +1317,14 @@ addAuthOptions(
   getCommand.command("raw <apiPath>").description("Run a read-only GET request against a captured API path"),
   "json, yaml"
 ).action(handleGetRaw);
+
+addAuthOptions(
+  program.command("apply").description("Apply one policy manifest from YAML"),
+  "json, yaml"
+)
+  .requiredOption("-f, --filename <path>", "YAML file to apply, or - for stdin")
+  .option("--app <appName>", "Application name when the manifest omits metadata.application")
+  .action(handleApply);
 
 program.parseAsync(process.argv).catch((error) => {
   console.error(error.stack || error.message);
