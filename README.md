@@ -94,31 +94,45 @@ When `--policy` or `--env` is used, `vela-cli` resolves the workflow from full p
 
 ## TUI
 
-`vela-cli tui` launches a read-only terminal UI inspired by k9s. It focuses on fast navigation across the most useful Vela resources without changing the existing `vela-cli <verb> <resource>` command shape.
+`vela-cli tui` launches a k9s-inspired terminal UI. It focuses on fast navigation across the most useful Vela resources without changing the existing `vela-cli <verb> <resource>` command shape.
 
 The first version includes:
 
 - resource tabs for `apps`, `projects`, `envs`, `definitions`, and `addons`
 - k9s-style drill-down navigation for `projects -> apps -> policies`
-- `enter` for drill-down and `d` for describe
-- a left-side list and right-side preview pane
+- a single full-width resource table with no preview pane
+- a single compact top status area for context, commands, and search state
+- `enter` for drill-down, `d` for describe, and `e` for policy edit
 - keyboard shortcuts for switching resources, filtering, refreshing, and going back up one level
 
 Useful keys:
 
 - `1-5`: switch resources
 - `tab` / `shift-tab`: cycle resources
+- `:`: open k9s-style command mode
+- `/`: open k9s-style filter mode
 - `j` / `k` or arrow keys: move selection
 - `enter`: drill down into the selected row
 - `d`: describe the selected row
+- `e`: edit the selected policy in the policies view
 - `esc` / `left` / `backspace`: go back one level
-- `/`: set a substring filter
 - `y`: toggle detail format between YAML and JSON
 - `r`: refresh the current resource
 - `?`: show help
 - `q`: quit
 
-The TUI is intentionally read-only. It does not call `edit policy`, `apply -f`, or any deployment flow.
+Useful command examples:
+
+- `:a` or `:apps` to switch to apps
+- `:prj` or `:projects` to switch to projects
+- `:po <app>` to open policies for an app
+- `:apps /foo` to switch resource and immediately apply a filter
+- `/foo|bar` for regex filtering
+- `/! foo` for inverse regex filtering
+- `/-f abc` for fuzzy finding
+- `/-l key=value` for label filtering
+
+In the policies view, `e` uses the same flow as `vela-cli edit policy`: it opens a temp YAML manifest in your editor, writes a backup before any change, and submits the update when you save and exit. Outside the policies view, the TUI remains read-only.
 
 ## Policy Editing
 
@@ -154,7 +168,7 @@ Default backup locations:
 ## Safety model
 
 - Allows read-only capture via Playwright as before
-- Allows read-only terminal exploration through `vela-cli tui`
+- Allows terminal exploration through `vela-cli tui`, plus policy edits from the policies view with the same backup-first flow as `edit policy`
 - Allows live `POST` deployments through `deploy app`
 - Allows live `PUT` updates only through `edit policy` and `apply -f`
 - Stores sanitized capture artifacts under `artifacts/`

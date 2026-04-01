@@ -1,6 +1,7 @@
 const blessed = require("blessed");
 const YAML = require("yaml");
 const { VelaClient } = require("./api");
+const policyEdit = require("./policy-edit");
 
 const RESOURCE_ORDER = ["apps", "projects", "envs", "definitions", "addons"];
 
@@ -100,6 +101,22 @@ const POLICY_COLUMNS = [
   { title: "UPDATED", width: 19, value: (item) => item.updateTime || "" },
 ];
 
+const RESOURCE_COMMAND_ALIASES = {
+  apps: ["apps", "app", "a"],
+  projects: ["projects", "project", "proj", "prj"],
+  envs: ["envs", "env", "e"],
+  definitions: ["definitions", "definition", "defs", "def"],
+  addons: ["addons", "addon", "add", "ao"],
+  policies: ["policies", "policy", "po"],
+};
+
+const RESOURCE_COMMAND_LOOKUP = Object.entries(RESOURCE_COMMAND_ALIASES).reduce((lookup, [resourceKey, aliases]) => {
+  for (const alias of aliases) {
+    lookup[alias] = resourceKey;
+  }
+  return lookup;
+}, Object.create(null));
+
 function summarizeError(error) {
   if (!error) {
     return "Unknown error";
@@ -137,6 +154,137 @@ function buildRows(view, items) {
   const header = view.columns.map((column) => column.title);
   const rows = items.map((item) => view.columns.map((column) => truncateCell(column.value(item), column.width)));
   return [header, ...rows];
+}
+
+function normalizeLabelEntries(item) {
+  if (!item || !item.labels || typeof item.labels !== "object" || Array.isArray(item.labels)) {
+    return [];
+  }
+
+  return Object.entries(item.labels).map(([key, value]) => [String(key), value == null ? "" : String(value)]);
+}
+
+function getItemSearchText(view, item) {
+  const labelText = normalizeLabelEntries(item)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(" ");
+
+  return [view.getSearchText(item), labelText].filter(Boolean).join(" ");
+}
+
+function isFuzzySubsequence(needle, haystack) {
+  let searchIndex = 0;
+  for (const character of needle) {
+    searchIndex = haystack.indexOf(character, searchIndex);
+    if (searchIndex === -1) {
+      return false;
+    }
+    searchIndex += 1;
+  }
+  return true;
+}
+
+function fuzzyIncludes(needle, haystack) {
+  const normalizedNeedle = String(needle || "")
+    .toLowerCase()
+    .replace(/\s+/g, "");
+  const normalizedHaystack = String(haystack || "")
+    .toLowerCase()
+    .replace(/\s+/g, "");
+
+  if (!normalizedNeedle) {
+    return true;
+  }
+
+  return isFuzzySubsequence(normalizedNeedle, normalizedHaystack);
+}
+
+function matchLabelSelector(item, selector) {
+  const entries = normalizeLabelEntries(item);
+  if (entries.length === 0) {
+    return false;
+  }
+
+  const selectors = String(selector || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (selectors.length === 0) {
+    return false;
+  }
+
+  return selectors.every((part) => {
+    const [rawKey, ...rawValueParts] = part.split("=");
+    const key = rawKey.trim().toLowerCase();
+    if (!key) {
+      return false;
+    }
+
+    if (rawValueParts.length === 0) {
+      return entries.some(([entryKey]) => entryKey.toLowerCase() === key);
+    }
+
+    const expectedValue = rawValueParts.join("=").trim().toLowerCase();
+    return entries.some(
+      ([entryKey, entryValue]) =>
+        entryKey.toLowerCase() === key && String(entryValue || "").toLowerCase() === expectedValue,
+    );
+  });
+}
+
+function buildFilterMatcher(rawFilter) {
+  const filter = String(rawFilter || "").trim();
+  if (!filter) {
+    return null;
+  }
+
+  if (filter.startsWith("-f ")) {
+    const needle = filter.slice(3).trim();
+    if (!needle) {
+      throw new Error("Fuzzy filters need text after -f.");
+    }
+
+    return {
+      mode: "fuzzy",
+      matches: (view, item) => fuzzyIncludes(needle, getItemSearchText(view, item)),
+    };
+  }
+
+  if (filter.startsWith("-l ")) {
+    const selector = filter.slice(3).trim();
+    if (!selector) {
+      throw new Error("Label filters need a selector after -l.");
+    }
+
+    return {
+      mode: "labels",
+      matches: (view, item) => matchLabelSelector(item, selector),
+    };
+  }
+
+  const inverse = filter.startsWith("!");
+  const pattern = inverse ? filter.slice(1).trim() : filter;
+  if (!pattern) {
+    throw new Error("Regex filters cannot be empty.");
+  }
+
+  const regex = new RegExp(pattern, "i");
+  return {
+    mode: inverse ? "inverse-regex" : "regex",
+    matches: (view, item) => {
+      const matched = regex.test(getItemSearchText(view, item));
+      return inverse ? !matched : matched;
+    },
+  };
+}
+
+function resolveResourceCommand(token) {
+  if (!token) {
+    return null;
+  }
+
+  return RESOURCE_COMMAND_LOOKUP[String(token).toLowerCase()] || null;
 }
 
 function normalizeResourceKey(resourceKey) {
@@ -289,7 +437,10 @@ function createAppPoliciesView(app, options = {}) {
     columns: POLICY_COLUMNS,
     getId: (item) => item.name || "",
     getSearchText: (item) => [item.name, item.type, item.envName, item.alias, item.updateTime].filter(Boolean).join(" "),
-    loadItems: async (client) => fetchPolicies(client, app.name),
+    loadItems: async (client) => {
+      const policies = await fetchPolicies(client, app.name);
+      return policies.filter((item) => item.type === "override");
+    },
     describeItem: async (client, item) =>
       client.getJson(
         `/api/v1/applications/${encodeURIComponent(app.name)}/policies/${encodeURIComponent(item.name)}`,
@@ -332,6 +483,7 @@ function buildPreview(view, item, items) {
     lines.push("");
     lines.push("Enter: open policies for this app");
     lines.push("d: describe app");
+    lines.push("e: edit policy in policies view");
     return lines.join("\n");
   }
 
@@ -355,6 +507,7 @@ function buildPreview(view, item, items) {
     lines.push(`Updated: ${item.updateTime || ""}`);
     lines.push("");
     lines.push("d: describe policy");
+    lines.push("e: edit policy");
     lines.push("esc: back to app list");
     return lines.join("\n");
   }
@@ -406,11 +559,18 @@ async function runTui(options = {}) {
 
   await client.login();
 
-  const screen = blessed.screen({
-    smartCSR: true,
+  const mouseEnabled = process.platform !== "win32";
+  const screenOptions = {
+    smartCSR: process.platform !== "win32",
     fullUnicode: false,
     title: "vela-cli tui",
-  });
+  };
+
+  if (process.platform === "win32") {
+    screenOptions.terminal = "windows-ansi";
+  }
+
+  const screen = blessed.screen(screenOptions);
 
   const state = {
     viewStack: [createRootView(initialResource)],
@@ -460,7 +620,7 @@ async function runTui(options = {}) {
     height: "100%-10",
     keys: true,
     vi: true,
-    mouse: true,
+    mouse: mouseEnabled,
     border: "line",
     align: "left",
     noCellBorders: true,
@@ -481,7 +641,7 @@ async function runTui(options = {}) {
     width: "52%",
     height: "100%-10",
     border: "line",
-    mouse: true,
+    mouse: mouseEnabled,
     scrollable: true,
     alwaysScroll: true,
     scrollbar: {
@@ -531,24 +691,41 @@ async function runTui(options = {}) {
     alwaysScroll: true,
     keys: true,
     vi: true,
-    mouse: true,
+    mouse: mouseEnabled,
     label: " Help ",
     content: [
       "{bold}vela-cli tui{/bold}",
       "",
-      "[1-5] switch top-level resources",
-      "[tab] / [shift-tab] next or previous resource",
-      "[up/down] or [j/k] move selection",
-      "[enter] drill down into the selected row",
-      "[d] describe the selected row",
-      "[esc] / [left] / [backspace] go back one level",
-      "[/] set or clear a substring filter for the current view",
-      "[y] toggle describe format between YAML and JSON",
-      "[r] refresh the current view",
-      "[?] toggle this help dialog",
-      "[q] quit",
+      "k9s-style command mode:",
+      "  :a or :apps                switch to apps",
+      "  :prj or :projects          switch to projects",
+      "  :e or :envs                switch to envs",
+      "  :def or :definitions       switch to definitions",
+      "  :ao or :addons             switch to addons",
+      "  :po <app>                  open policies for an app",
+      "  :apps /query               switch resource and apply a filter",
+      "  :q                         quit",
       "",
-      "Projects -> Apps -> Policies is the main k9s-style navigation path.",
+      "k9s-style filter mode:",
+      "  /regex                     regex filter",
+      "  /! regex                   inverse regex filter",
+      "  /-f text                   fuzzy find",
+      "  /-l key=value              label selector",
+      "",
+      "Other keys:",
+      "  [1-5] switch resources",
+      "  [tab] / [shift-tab] next or previous resource",
+      "  [up/down] or [j/k] move selection",
+      "  [enter] drill down into the selected row",
+      "  [d] describe the selected row",
+      "  [e] edit the selected policy and submit it",
+      "  [esc] / [left] / [backspace] go back one level",
+      "  [y] toggle describe format between YAML and JSON",
+      "  [r] refresh the current view",
+      "  [?] toggle this help dialog",
+      "  [q] quit",
+      "",
+      "Projects -> Apps -> Policies is the main navigation path.",
     ].join("\n"),
     tags: true,
     style: {
@@ -569,7 +746,7 @@ async function runTui(options = {}) {
     alwaysScroll: true,
     keys: true,
     vi: true,
-    mouse: true,
+    mouse: mouseEnabled,
     scrollbar: {
       ch: " ",
       inverse: true,
@@ -641,7 +818,7 @@ async function runTui(options = {}) {
     const userLabel = state.headerUser ? ` | user: ${truncateCell(state.headerUser, 24)}` : "";
     const updatedLabel = state.lastUpdated ? ` | updated: ${state.lastUpdated}` : "";
     header.setContent(
-      `{bold}vela-cli tui{/bold}  k9s-inspired read-only explorer\nbase: ${baseUrl}${userLabel}${updatedLabel}\nscope: ${currentView.breadcrumb}`,
+      `{bold}vela-cli tui{/bold}  k9s-inspired terminal UI\nbase: ${baseUrl}${userLabel}${updatedLabel}\nscope: ${currentView.breadcrumb}`,
     );
   }
 
@@ -665,8 +842,9 @@ async function runTui(options = {}) {
     const filterText = filter ? ` filter:${truncateCell(filter, 20)}` : "";
     const canDrill = Boolean(currentView.canEnter);
     const canGoBack = state.viewStack.length > 1;
+    const editHint = currentView.kind === "app-policies" ? "  [e] edit" : "";
     footer.setContent(
-      `[1-5] resource  [tab] next  [enter] ${canDrill ? "drill" : "-"}  [d] describe  [esc] ${canGoBack ? "back" : "-"}  [/] filter  [y] ${state.describeFormat.toUpperCase()}  [r] refresh  [q] quit${filterText}\n${state.statusText}`,
+      `[1-5] resource  [tab] next  [enter] ${canDrill ? "drill" : "-"}  [d] describe${editHint}  [esc] ${canGoBack ? "back" : "-"}  [/] filter  [y] ${state.describeFormat.toUpperCase()}  [r] refresh  [q] quit${filterText}\n${state.statusText}`,
     );
   }
 
@@ -872,6 +1050,57 @@ async function runTui(options = {}) {
     }
   }
 
+  async function editSelectedPolicy() {
+    const currentView = getCurrentView();
+    const selectedItem = getCurrentSelection();
+
+    if (!selectedItem) {
+      setStatus("Nothing selected.");
+      screen.render();
+      return;
+    }
+
+    if (currentView.kind !== "app-policies") {
+      setStatus("Edit is available only in the policies view.");
+      screen.render();
+      return;
+    }
+
+    const appName = currentView.scope.appName;
+    const policyName = selectedItem.name;
+
+    try {
+      setStatus(`Editing policy ${policyName}...`);
+      screen.render();
+      screen.leave();
+
+      const result = await policyEdit.editPolicyInteractively(client, appName, policyName);
+
+      screen.enter();
+      resourceTable.focus();
+      renderHeader();
+      renderTabs();
+      renderFooter();
+      screen.render();
+
+      await loadCurrentView({ force: true });
+      setStatus(
+        result.changed
+          ? `Updated policy ${policyName}. Backup: ${truncateCell(result.backupPath || "", 42)}`
+          : `Policy ${policyName} unchanged`,
+      );
+      screen.render();
+    } catch (error) {
+      screen.enter();
+      resourceTable.focus();
+      renderHeader();
+      renderTabs();
+      renderFooter();
+      setStatus(`Edit failed: ${summarizeError(error)}`);
+      screen.render();
+    }
+  }
+
   function closeModal() {
     modal.hide();
     resourceTable.focus();
@@ -1038,6 +1267,13 @@ async function runTui(options = {}) {
       return;
     }
     await openDescribe(false);
+  });
+
+  screen.key(["e"], async () => {
+    if (hasOpenOverlay()) {
+      return;
+    }
+    await editSelectedPolicy();
   });
 
   screen.key(["enter"], async () => {

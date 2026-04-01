@@ -8,6 +8,7 @@ const { Command } = require("commander");
 const YAML = require("yaml");
 const { runCapture, DEFAULT_BASE_URL, DEFAULT_LOGIN_PATH } = require("./capture");
 const { VelaClient } = require("./api");
+const policyEdit = require("./policy-edit");
 const { RESOURCE_ORDER, runTui } = require("./tui");
 
 const OUTPUT_FORMATS = new Set(["table", "json", "yaml"]);
@@ -1116,26 +1117,10 @@ async function handleGetRaw(apiPath, options) {
 
 async function handleEditPolicy(appName, policyName, options) {
   const client = buildClient(options);
-  const currentPolicy = await client.getJson(getPolicyApiPath(appName, policyName));
-  const manifest = buildEditablePolicyManifest(appName, currentPolicy);
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "vela-policy-"));
-  const tempFile = path.join(tempDir, `${policyName}.yaml`);
-
-  try {
-    await fs.writeFile(tempFile, YAML.stringify(manifest, { indent: 2 }), "utf8");
-    await openEditor(tempFile, options.editor);
-
-    const editedRaw = await fs.readFile(tempFile, "utf8");
-    const editedManifest = YAML.parse(editedRaw);
-    const desiredState = normalizeEditablePolicyState(editedManifest, {
-      application: appName,
-      name: policyName,
-    });
-    const result = await updateExistingPolicy(client, desiredState);
-    renderMutationResult(result, options);
-  } finally {
-    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
-  }
+  const result = await policyEdit.editPolicyInteractively(client, appName, policyName, {
+    editor: options.editor,
+  });
+  renderMutationResult(result, options);
 }
 
 async function handleApply(options) {
@@ -1145,11 +1130,11 @@ async function handleApply(options) {
 
   const input = await readYamlFile(options.filename);
   const manifest = YAML.parse(input);
-  const desiredState = normalizeEditablePolicyState(manifest, {
+  const desiredState = policyEdit.normalizeEditablePolicyState(manifest, {
     application: options.app,
   });
   const client = buildClient(options);
-  const result = await updateExistingPolicy(client, desiredState);
+  const result = await policyEdit.updateExistingPolicy(client, desiredState);
   renderMutationResult(result, options);
 }
 
@@ -1211,7 +1196,7 @@ program
 
 program
   .command("tui")
-  .description("Launch a k9s-inspired read-only terminal UI")
+  .description("Launch a k9s-inspired terminal UI")
   .option("--base-url <url>", "Vela base URL", DEFAULT_BASE_URL)
   .option("--login-path <path>", "Login API path", DEFAULT_LOGIN_PATH)
   .option("--token <token>", "Vela bearer token (or set VELA_TOKEN)")
