@@ -22,6 +22,8 @@ VELA_USERNAME
 VELA_PASSWORD
 ```
 
+Each CLI invocation logs in with those credentials. If an in-flight `GET` request receives `401` or `403`, the client re-authenticates once and retries automatically.
+
 ## Shell Completion
 
 ```bash

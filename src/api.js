@@ -9,8 +9,10 @@ class VelaClient {
     this.token = null;
   }
 
-  async login() {
-    if (this.token) {
+  async login(options = {}) {
+    const { force = false } = options;
+
+    if (this.token && !force) {
       return this.token;
     }
 
@@ -43,16 +45,27 @@ class VelaClient {
     return this.token;
   }
 
-  async getJson(apiPath) {
-    await this.login();
-
-    const response = await fetch(new URL(apiPath, this.baseUrl), {
+  async getWithToken(apiPath) {
+    return fetch(new URL(apiPath, this.baseUrl), {
       method: "GET",
       headers: {
         accept: "application/json",
         authorization: `Bearer ${this.token}`,
       },
     });
+  }
+
+  async getJson(apiPath) {
+    await this.login();
+
+    let response = await this.getWithToken(apiPath);
+
+    // Tokens are only cached in-process, so retry once with a fresh login if the server rejects it.
+    if (response.status === 401 || response.status === 403) {
+      this.token = null;
+      await this.login({ force: true });
+      response = await this.getWithToken(apiPath);
+    }
 
     if (!response.ok) {
       throw new Error(`GET ${apiPath} failed with status ${response.status}`);
