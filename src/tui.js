@@ -11,10 +11,10 @@ const ROOT_RESOURCE_DEFINITIONS = {
   apps: {
     label: "Apps",
     columns: [
-      { title: "NAME", width: 24, value: (item) => item.name || "" },
-      { title: "PROJECT", width: 18, value: (item) => item.project?.name || "" },
-      { title: "ALIAS", width: 18, value: (item) => item.alias || "" },
-      { title: "UPDATED", width: 19, value: (item) => item.updateTime || "" },
+      { title: "NAME", width: 24, minWidth: 24, maxWidth: 64, growPriority: 4, value: (item) => item.name || "" },
+      { title: "PROJECT", width: 16, minWidth: 12, maxWidth: 24, growPriority: 2, value: (item) => item.project?.name || "" },
+      { title: "ALIAS", width: 10, minWidth: 6, maxWidth: 14, growPriority: 1, value: (item) => item.alias || "" },
+      { title: "UPDATED", width: 12, minWidth: 8, maxWidth: 16, growPriority: 0, value: (item) => item.updateTime || "" },
     ],
     getId: (item) => item.name || "",
     getSearchText: (item) =>
@@ -182,6 +182,73 @@ function padDisplayWidth(value, width) {
   return `${text}${" ".repeat(width - displayWidth)}`;
 }
 
+function getColumnRenderWidth(column) {
+  return column.renderWidth || column.width || unicode.strWidth(column.title || "");
+}
+
+function getColumnMinWidth(column) {
+  const titleWidth = unicode.strWidth(column.title || "");
+  const configuredMinWidth = column.minWidth == null ? 0 : column.minWidth;
+  const preferredWidth = column.width == null ? 0 : column.width;
+  return Math.max(configuredMinWidth, Math.min(titleWidth, preferredWidth) || titleWidth || 1);
+}
+
+function getColumnContentWidth(column, items) {
+  const titleWidth = unicode.strWidth(column.title || "");
+  const valueWidth = items.reduce((maxWidth, item) => {
+    const cellValue = typeof column.value === "function" ? column.value(item) : "";
+    return Math.max(maxWidth, unicode.strWidth(String(cellValue == null ? "" : cellValue)));
+  }, titleWidth);
+  const maxWidth = column.maxWidth == null ? valueWidth : column.maxWidth;
+  return Math.max(getColumnMinWidth(column), Math.min(valueWidth, maxWidth));
+}
+
+function resolveColumnWidths(columns, items, tableWidth) {
+  if (!Array.isArray(columns) || columns.length === 0) {
+    return [];
+  }
+
+  const safeTableWidth = Number.isFinite(tableWidth) ? tableWidth : 0;
+  const availableContentWidth = Math.max(
+    safeTableWidth - columns.length - 3,
+    columns.reduce((sum, column) => sum + getColumnMinWidth(column), 0),
+  );
+  const desiredWidths = columns.map((column) => getColumnContentWidth(column, items));
+  const widths = columns.map((column) => getColumnMinWidth(column));
+  let remainingWidth = availableContentWidth - widths.reduce((sum, width) => sum + width, 0);
+
+  const growthOrder = columns
+    .map((column, index) => ({
+      index,
+      growPriority: column.growPriority == null ? 1 : column.growPriority,
+    }))
+    .sort((left, right) => right.growPriority - left.growPriority || left.index - right.index);
+
+  for (const entry of growthOrder) {
+    if (remainingWidth <= 0) {
+      break;
+    }
+
+    const desiredGrowth = desiredWidths[entry.index] - widths[entry.index];
+    if (desiredGrowth <= 0) {
+      continue;
+    }
+
+    const grantedGrowth = Math.min(desiredGrowth, remainingWidth);
+    widths[entry.index] += grantedGrowth;
+    remainingWidth -= grantedGrowth;
+  }
+
+  if (remainingWidth > 0) {
+    widths[0] += remainingWidth;
+  }
+
+  return columns.map((column, index) => ({
+    ...column,
+    renderWidth: widths[index],
+  }));
+}
+
 function buildHeaderStatusLine(text, width) {
   const lineWidth = Math.max(width || 0, 1);
   const label = "{yellow-fg}State:{/yellow-fg} ";
@@ -206,14 +273,16 @@ function stringifyDetail(value, format) {
   return YAML.stringify(value, { indent: 2 }).trimEnd();
 }
 
-function buildRows(view, items) {
-  const header = view.columns.map((column) => column.title);
-  const rows = items.map((item) => view.columns.map((column) => truncateCell(column.value(item), column.width)));
+function buildRows(columns, items) {
+  const header = columns.map((column) => truncateCell(column.title, getColumnRenderWidth(column)));
+  const rows = items.map((item) =>
+    columns.map((column) => truncateCell(column.value(item), getColumnRenderWidth(column))),
+  );
   return [header, ...rows];
 }
 
 function buildPlaceholderRow(columns, message) {
-  return columns.map((column, index) => (index === 0 ? truncateCell(message, column.width) : ""));
+  return columns.map((column, index) => (index === 0 ? truncateCell(message, getColumnRenderWidth(column)) : ""));
 }
 
 function extractContextLabel(baseUrl) {
@@ -985,11 +1054,12 @@ async function runTui(options = {}) {
 
     resourceTable.setLabel(` ${currentView.label} [${state.currentVisibleItems.length}/${totalCount}]${filterSuffix} `);
     state.suppressSelectionEvent = true;
-    const rows = buildRows(currentView, state.currentVisibleItems);
+    const renderColumns = resolveColumnWidths(currentView.columns, state.currentVisibleItems, resourceTable.width);
+    const rows = buildRows(renderColumns, state.currentVisibleItems);
     if (state.currentVisibleItems.length === 0) {
       rows.push(
         buildPlaceholderRow(
-          currentView.columns,
+          renderColumns,
           totalCount > 0 ? "No rows match the current filter." : "No rows available in this view.",
         ),
       );
