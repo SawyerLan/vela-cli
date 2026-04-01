@@ -62,7 +62,7 @@ node ./src/cli.js deploy app <app> --env <env>
 node ./src/cli.js tui
 node ./src/cli.js tui --resource envs
 node ./src/cli.js edit policy <app> <policy>
-node ./src/cli.js apply -f ./policy.yaml --app <app>
+node ./src/cli.js apply -f ./policy.yaml --app <app> --policy <policy>
 node ./src/cli.js config view <app> --env <env>
 node ./src/cli.js config view <app> --env <env> -o json
 node ./src/cli.js get revisions <name>
@@ -103,6 +103,7 @@ The first version includes:
 - a single full-width resource table with no preview pane
 - a single compact top status area for context, commands, and search state
 - `enter` for drill-down and `d` for describe
+- `e` for editing the selected policy from the policies view with the same backup-first flow as `edit policy`
 - keyboard shortcuts for switching resources, filtering, refreshing, and going back up one level
 
 Useful keys:
@@ -114,6 +115,7 @@ Useful keys:
 - `j` / `k` or arrow keys: move selection
 - `enter`: drill down into the selected row
 - `d`: describe the selected row
+- `e`: edit the selected policy from the policies view
 - `esc` / `left` / `backspace`: go back one level
 - `y`: toggle detail format between YAML and JSON
 - `r`: refresh the current resource
@@ -127,6 +129,8 @@ Useful command examples:
 - `:po <app>` to open policies for an app
 - `:apps /foo` to switch resource and immediately apply a filter
 
+If you want the TUI to use a specific editor for `e`, launch it with `node ./src/cli.js tui --editor <command>` or set `VELA_EDITOR`.
+
 Useful filter examples:
 
 - `/foo|bar` for regex filtering
@@ -136,7 +140,7 @@ Useful filter examples:
 
 ## Policy Editing
 
-`edit policy` fetches the current policy, writes an editable YAML manifest to a temp file, launches your editor, then converts the YAML back into the JSON payload required by `PUT /api/v1/applications/<app>/policies/<policy>`.
+`edit policy` fetches the current policy, writes an editable YAML document whose top-level fields match the real `PUT /api/v1/applications/<app>/policies/<policy>` payload, launches your editor, then converts that YAML back into the JSON payload required by the API.
 
 Editor selection is owned by `vela-cli` itself:
 
@@ -154,11 +158,11 @@ Default editor behavior:
 `apply -f` accepts either:
 
 - the same manifest emitted by `edit policy`
-- a raw `get policy -o yaml` document, as long as you also provide `--app <app>` (or add `application` / `metadata.application`)
+- a raw `get policy -o yaml` document, as long as you also provide `--app <app>` and `--policy <policy>` when the file omits them (or add `application` / `metadata.application` and `name` / `metadata.name`)
 
 Only existing policies are updated right now. The CLI keeps the server-owned fields (`creator`, `createTime`, `updateTime`) out of the editable manifest and automatically stringifies `properties` back to JSON for the update request.
 
-When a policy actually changes, `vela-cli` writes a timestamped YAML backup of the pre-change content before sending the `PUT` request. The backup uses the same manifest shape as `edit policy`, so it can be applied back directly.
+When a policy actually changes, `vela-cli` writes a timestamped YAML backup of the pre-change content before sending the `PUT` request. The backup uses the same top-level field shape as `edit policy`, so it stays aligned with the live API payload.
 
 Default backup locations:
 

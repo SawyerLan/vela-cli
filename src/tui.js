@@ -1,6 +1,7 @@
 const blessed = require("blessed");
 const YAML = require("yaml");
 const { VelaClient } = require("./api");
+const policyEdit = require("./policy-edit");
 const unicode = blessed.unicode || require("blessed/lib/unicode");
 
 const RESOURCE_ORDER = ["apps", "projects", "envs", "definitions", "addons"];
@@ -704,6 +705,7 @@ async function runTui(options = {}) {
       "  [up/down] or [j/k] move selection",
       "  [enter] drill down into the selected row",
       "  [d] describe the selected row",
+      "  [e] edit the selected policy (policies view only)",
       "  [esc] / [left] / [backspace] go back one level",
       "  [y] toggle describe format between YAML and JSON",
       "  [r] refresh the current view",
@@ -847,6 +849,7 @@ async function runTui(options = {}) {
       ["<enter>", "Open"],
       ["<esc>", "Back"],
       ["<d>", "Describe"],
+      ...(currentView.kind === "app-policies" ? [["<e>", "Edit"]] : []),
       ["<tab>", "Next"],
       ["<r>", "Refresh"],
       ["<y>", `Fmt ${state.describeFormat.toUpperCase()}`],
@@ -1093,6 +1096,77 @@ async function runTui(options = {}) {
     } catch (error) {
       modal.setContent(`Describe failed:\n${summarizeError(error)}`);
       setStatus(`Describe failed: ${summarizeError(error)}`);
+      screen.render();
+    }
+  }
+
+  function restoreScreenAfterExternalCommand(resumeTerminal) {
+    if (typeof resumeTerminal === "function") {
+      resumeTerminal();
+    }
+    screen.alloc();
+    renderHeader();
+    renderTabs();
+    renderFooter();
+    renderTable();
+    resourceTable.focus();
+    screen.render();
+  }
+
+  async function editCurrentPolicy() {
+    const currentView = getCurrentView();
+    if (currentView.kind !== "app-policies") {
+      return;
+    }
+
+    const selectedItem = getCurrentSelection();
+    if (!selectedItem) {
+      setStatus("Nothing selected.");
+      screen.render();
+      return;
+    }
+
+    const appName = currentView.scope?.appName;
+    const policyName = currentView.getId(selectedItem);
+    if (!appName || !policyName) {
+      setStatus("Unable to resolve the selected policy.");
+      screen.render();
+      return;
+    }
+
+    setStatus(`Opening editor for policy ${policyName}...`);
+    screen.render();
+
+    let resumeTerminal = null;
+    try {
+      let result;
+      resumeTerminal = screen.program.pause();
+
+      try {
+        result = await policyEdit.editPolicyInteractively(client, appName, policyName, {
+          editor: options.editor,
+        });
+      } finally {
+        if (resumeTerminal) {
+          restoreScreenAfterExternalCommand(resumeTerminal);
+          resumeTerminal = null;
+        }
+      }
+
+      await loadCurrentView({ force: true });
+      resourceTable.focus();
+
+      if (result.changed) {
+        setStatus(`Updated policy ${result.response.name}. Backup: ${result.backupPath}`);
+      } else {
+        setStatus(`Policy ${result.response.name} unchanged.`);
+      }
+      screen.render();
+    } catch (error) {
+      if (resumeTerminal) {
+        restoreScreenAfterExternalCommand(resumeTerminal);
+      }
+      setStatus(`Edit failed: ${summarizeError(error)}`);
       screen.render();
     }
   }
@@ -1465,6 +1539,13 @@ async function runTui(options = {}) {
       return;
     }
     await openDescribe(false);
+  });
+
+  screen.key(["e"], async () => {
+    if (hasOpenOverlay()) {
+      return;
+    }
+    await editCurrentPolicy();
   });
 
   screen.key(["enter"], async () => {

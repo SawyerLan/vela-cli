@@ -69,10 +69,10 @@ const SUBCOMMANDS = {
 
 const COMMAND_OPTIONS = {
   capture: ["--base-url", "--login-path", "--headed"],
-  apply: ["--base-url", "--login-path", "--token", "-o", "--output", "--json", "-f", "--filename", "--app"],
+  apply: ["--base-url", "--login-path", "--token", "-o", "--output", "--json", "-f", "--filename", "--app", "--policy"],
   deploy: [],
   endpoints: [],
-  tui: ["--base-url", "--login-path", "--token", "--resource"],
+  tui: ["--base-url", "--login-path", "--token", "--resource", "--editor"],
   completion: [],
   get: [],
   describe: [],
@@ -1132,6 +1132,7 @@ async function handleApply(options) {
   const manifest = YAML.parse(input);
   const desiredState = policyEdit.normalizeEditablePolicyState(manifest, {
     application: options.app,
+    name: options.policy,
   });
   const client = buildClient(options);
   const result = await policyEdit.updateExistingPolicy(client, desiredState);
@@ -1201,6 +1202,7 @@ program
   .option("--login-path <path>", "Login API path", DEFAULT_LOGIN_PATH)
   .option("--token <token>", "Vela bearer token (or set VELA_TOKEN)")
   .option("--resource <name>", `Initial resource: ${RESOURCE_ORDER.join(", ")}`, "apps")
+  .option("--editor <command>", "Editor command to launch for policy edits")
   .action(handleTui);
 
 const getCommand = program.command("get").description("List resources or fetch a single resource");
@@ -1308,7 +1310,8 @@ addAuthOptions(
   "json, yaml"
 )
   .requiredOption("-f, --filename <path>", "YAML file to apply, or - for stdin")
-  .option("--app <appName>", "Application name when the manifest omits metadata.application")
+  .option("--app <appName>", "Application name when the manifest omits application/metadata.application")
+  .option("--policy <policyName>", "Policy name when the manifest omits name/metadata.name")
   .action(handleApply);
 
 program.parseAsync(process.argv).catch((error) => {

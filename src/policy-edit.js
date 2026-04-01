@@ -4,8 +4,6 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const YAML = require("yaml");
 
-const EDITABLE_POLICY_API_VERSION = "vela-cli.dev/v1alpha1";
-const EDITABLE_POLICY_KIND = "Policy";
 const EDITABLE_POLICY_FIELDS = ["alias", "type", "description", "envName", "properties", "workflowPolicyBind"];
 
 function hasOwn(object, key) {
@@ -28,20 +26,12 @@ function buildEditablePolicyState(appName, policy) {
 function buildEditablePolicyManifest(appName, policy) {
   const state = buildEditablePolicyState(appName, policy);
   return {
-    apiVersion: EDITABLE_POLICY_API_VERSION,
-    kind: EDITABLE_POLICY_KIND,
-    metadata: {
-      application: state.application,
-      name: state.name,
-    },
-    spec: {
-      alias: state.alias,
-      type: state.type,
-      description: state.description,
-      envName: state.envName,
-      properties: state.properties,
-      workflowPolicyBind: state.workflowPolicyBind,
-    },
+    alias: state.alias,
+    type: state.type,
+    description: state.description,
+    envName: state.envName,
+    properties: state.properties,
+    workflowPolicyBind: state.workflowPolicyBind,
   };
 }
 
@@ -177,10 +167,10 @@ function ensureJsonString(value, fieldName) {
 
 function buildPolicyUpdatePayload(state) {
   if (!state.application) {
-    throw new Error("Policy manifest is missing application. Set metadata.application or use --app.");
+    throw new Error("Policy manifest is missing application. Set application/metadata.application or use --app.");
   }
   if (!state.name) {
-    throw new Error("Policy manifest is missing name. Set metadata.name or name.");
+    throw new Error("Policy manifest is missing name. Set name/metadata.name or use --policy.");
   }
 
   return {

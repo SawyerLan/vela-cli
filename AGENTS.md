@@ -36,7 +36,7 @@ node ./src/cli.js get apps
 node ./src/cli.js get app <name>
 node ./src/cli.js get policy <app> <policy> -o yaml
 node ./src/cli.js edit policy <app> <policy>
-node ./src/cli.js apply -f ./policy.yaml --app <app>
+node ./src/cli.js apply -f ./policy.yaml --app <app> --policy <policy>
 npm run capture -- --headed
 npm run endpoints
 npm pack
@@ -130,7 +130,7 @@ If you changed policy logic, also run:
 
 ```bash
 node ./src/cli.js get policy <app> <policy> -o yaml
-node ./src/cli.js apply -f <file> --app <app>
+node ./src/cli.js apply -f <file> --app <app> --policy <policy>
 ```
 
 If you changed capture logic, also run:
