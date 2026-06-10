@@ -307,10 +307,6 @@ function buildHeaderStatusLine(text, width) {
 }
 
 function stringifyDetail(value, format) {
-  if (format === "json") {
-    return JSON.stringify(value, null, 2);
-  }
-
   return YAML.stringify(value, { indent: 2 }).trimEnd();
 }
 
@@ -765,7 +761,6 @@ async function runTui(options = {}) {
     selectedIdByViewId: Object.create(null),
     filterByViewId: Object.create(null),
     describeCache: new Map(),
-    describeFormat: "yaml",
     headerUser: "",
     lastUpdated: "",
     statusText: "Ready",
@@ -891,7 +886,7 @@ async function runTui(options = {}) {
       header: { fg: "brightwhite", bold: true },
       cell: {
         fg: "white",
-        selected: { fg: "black", bg: "green", bold: true },
+        selected: { fg: "brightwhite", bg: "blue", bold: true },
       },
     },
   });
@@ -937,7 +932,6 @@ async function runTui(options = {}) {
       "  [p] deploy the selected policy after confirmation",
       "  [e] edit the selected policy (policies view only)",
       "  [esc] / [left] / [backspace] go back one level",
-      "  [y] toggle describe format between YAML and JSON",
       "  [r] refresh the current view",
       "  [?] toggle this help dialog",
       "  [q] quit",
@@ -952,13 +946,13 @@ async function runTui(options = {}) {
 
   const modal = blessed.box({
     parent: screen,
-    top: 1,
-    left: 2,
-    width: "100%-4",
-    height: "100%-2",
+    top: 8,
+    left: 0,
+    width: "100%",
+    height: "100%-8",
     hidden: true,
     border: "line",
-    label: " Describe ",
+    label: " Detail ",
     scrollable: true,
     alwaysScroll: true,
     wrap: false,
@@ -969,7 +963,7 @@ async function runTui(options = {}) {
       inverse: true,
     },
     style: {
-      border: { fg: "yellow" },
+      border: { fg: "cyan" },
     },
   });
 
@@ -1067,9 +1061,9 @@ async function runTui(options = {}) {
   }
 
   function openModal(label, content) {
-    const modalWidth = modal.width && Number.isFinite(Number(modal.width)) ? Number(modal.width) : (screen.width || 1) - 4;
-    const contentWidth = Math.max(modalWidth - 4, 1);
+    const contentWidth = Math.max((screen.width || 1) - 4, 1);
     modal.setLabel(` ${label} `);
+    resourceTable.hide();
     modal.show();
     modal.focus();
     modal.setContent(wrapTextByDisplayWidth(content, contentWidth));
@@ -1150,7 +1144,6 @@ async function runTui(options = {}) {
       ...(currentView.kind === "app-policies" ? [["<e>", "Edit"]] : []),
       ["<tab>", "Next"],
       ["<r>", "Refresh"],
-      ["<y>", `Fmt ${state.describeFormat.toUpperCase()}`],
       ["<?>", "Help"],
       ["<q>", "Quit"],
       ["<1-5>", "Views"],
@@ -1178,7 +1171,7 @@ async function runTui(options = {}) {
         `{yellow-fg}Context:{/yellow-fg} ${contextLabel}`,
         `{yellow-fg}View:{/yellow-fg}    ${truncateCell(currentView.label, 24)}`,
         `{yellow-fg}User:{/yellow-fg}    ${userLabel}`,
-        `{yellow-fg}Mode:{/yellow-fg}    ${state.describeFormat.toUpperCase()}`,
+        `{yellow-fg}Mode:{/yellow-fg}    YAML`,
         `{yellow-fg}Rows:{/yellow-fg}    ${state.currentVisibleItems.length}/${totalCount}`,
         `{yellow-fg}Find:{/yellow-fg}    ${truncateCell(filterLabel, 24)}`,
         `{yellow-fg}Sel:{/yellow-fg}     ${truncateCell(selectedLabel, 24)}`,
@@ -1371,22 +1364,22 @@ async function runTui(options = {}) {
       return;
     }
 
-    const cacheKey = `${currentView.id}:${state.describeFormat}:${currentView.getId(selectedItem)}`;
-    openModal(`Describe: ${currentView.getId(selectedItem)} (${state.describeFormat.toUpperCase()})`, "Loading describe output...");
+    const cacheKey = `${currentView.id}:yaml:${currentView.getId(selectedItem)}`;
+    openModal(`Describe: ${currentView.getId(selectedItem)} (YAML)`, "Loading describe output...");
 
     if (!force && state.describeCache.has(cacheKey)) {
-      openModal(`Describe: ${currentView.getId(selectedItem)} (${state.describeFormat.toUpperCase()})`, state.describeCache.get(cacheKey));
+      openModal(`Describe: ${currentView.getId(selectedItem)} (YAML)`, state.describeCache.get(cacheKey));
       return;
     }
 
     try {
       const described = await currentView.describeItem(client, selectedItem, currentView);
-      const rendered = stringifyDetail(described, state.describeFormat);
+      const rendered = stringifyDetail(described, "yaml");
       state.describeCache.set(cacheKey, rendered);
-      openModal(`Describe: ${currentView.getId(selectedItem)} (${state.describeFormat.toUpperCase()})`, rendered);
+      openModal(`Describe: ${currentView.getId(selectedItem)} (YAML)`, rendered);
       setStatus(`Described ${currentView.getId(selectedItem)}`);
     } catch (error) {
-      openModal(`Describe: ${currentView.getId(selectedItem)} (${state.describeFormat.toUpperCase()})`, `Describe failed:\n${summarizeError(error)}`);
+      openModal(`Describe: ${currentView.getId(selectedItem)} (YAML)`, `Describe failed:\n${summarizeError(error)}`);
       setStatus(`Describe failed: ${summarizeError(error)}`);
     }
   }
@@ -1442,8 +1435,8 @@ async function runTui(options = {}) {
       });
       state.describeCache.clear();
       openModal(
-        `Deploy: ${result.appName} (${state.describeFormat.toUpperCase()})`,
-        stringifyDetail(result.response, state.describeFormat),
+        `Deploy: ${result.appName} (YAML)`,
+        stringifyDetail(result.response, "yaml"),
       );
       setStatus(
         `${pendingDeploy.force ? "Force restarted" : "Deployed"} ${result.appName} with workflow ${result.workflowName}.`,
@@ -1530,6 +1523,7 @@ async function runTui(options = {}) {
 
   function closeModal() {
     modal.hide();
+    resourceTable.show();
     resourceTable.focus();
     screen.render();
   }
@@ -1888,21 +1882,7 @@ async function runTui(options = {}) {
   screen.key(["y"], async () => {
     if (!confirmBox.hidden) {
       await performConfirmedDeploy();
-      return;
     }
-    if (isInputActive() || !help.hidden) {
-      return;
-    }
-    state.describeFormat = state.describeFormat === "yaml" ? "json" : "yaml";
-    renderHeader();
-    renderTabs();
-    renderSearchBar();
-    if (!modal.hidden) {
-      await openDescribe(true);
-      return;
-    }
-    setStatus(`Describe format: ${state.describeFormat.toUpperCase()}`);
-    screen.render();
   });
 
   screen.key(["d"], async () => {

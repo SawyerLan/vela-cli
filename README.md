@@ -126,7 +126,6 @@ Useful keys:
 - `p`: deploy the selected policy after showing app, policy, and workflow for confirmation
 - `e`: edit the selected policy from the policies view
 - `esc` / `left` / `backspace`: go back one level
-- `y`: toggle detail format between YAML and JSON
 - `r`: refresh the current resource
 - `?`: show help
 - `q`: quit
