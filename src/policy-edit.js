@@ -239,13 +239,83 @@ function resolveEditorCommand(editor) {
   return "vim";
 }
 
+function splitCommandLine(command) {
+  const input = String(command || "").trim();
+  if (!input) {
+    throw new Error("Editor command cannot be empty.");
+  }
+
+  const parts = [];
+  let current = "";
+  let quote = null;
+  let escaped = false;
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
+
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === "\"" || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      if (current) {
+        parts.push(current);
+        current = "";
+      }
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (escaped) {
+    current += "\\";
+  }
+
+  if (quote) {
+    throw new Error("Editor command has an unmatched quote.");
+  }
+
+  if (current) {
+    parts.push(current);
+  }
+
+  if (parts.length === 0) {
+    throw new Error("Editor command cannot be empty.");
+  }
+
+  return parts;
+}
+
 async function openEditor(filePath, editor) {
   const command = resolveEditorCommand(editor);
+  const [executable, ...baseArgs] = splitCommandLine(command);
 
   await new Promise((resolve, reject) => {
-    const child = spawn(command, [filePath], {
+    const child = spawn(executable, [...baseArgs, filePath], {
       stdio: "inherit",
-      shell: true,
+      shell: false,
     });
 
     child.on("error", reject);
@@ -264,10 +334,11 @@ async function editPolicyInteractively(client, appName, policyName, options = {}
   const manifest = buildEditablePolicyManifest(appName, currentPolicy);
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "vela-policy-"));
   const tempFile = path.join(tempDir, `${policyName}.yaml`);
+  const openEditorCommand = options.openEditor || openEditor;
 
   try {
     await fs.writeFile(tempFile, YAML.stringify(manifest, { indent: 2 }), "utf8");
-    await openEditor(tempFile, options.editor);
+    await openEditorCommand(tempFile, options.editor);
 
     const editedRaw = await fs.readFile(tempFile, "utf8");
     const editedManifest = YAML.parse(editedRaw);
@@ -285,5 +356,8 @@ module.exports = {
   editPolicyInteractively,
   getPolicyApiPath,
   normalizeEditablePolicyState,
+  openEditor,
+  resolveEditorCommand,
+  splitCommandLine,
   updateExistingPolicy,
 };

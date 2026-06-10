@@ -775,13 +775,83 @@ function resolveEditorCommand(editor) {
   return "vim";
 }
 
+function splitCommandLine(command) {
+  const input = String(command || "").trim();
+  if (!input) {
+    throw new Error("Editor command cannot be empty.");
+  }
+
+  const parts = [];
+  let current = "";
+  let quote = null;
+  let escaped = false;
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
+
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === "\"" || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      if (current) {
+        parts.push(current);
+        current = "";
+      }
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (escaped) {
+    current += "\\";
+  }
+
+  if (quote) {
+    throw new Error("Editor command has an unmatched quote.");
+  }
+
+  if (current) {
+    parts.push(current);
+  }
+
+  if (parts.length === 0) {
+    throw new Error("Editor command cannot be empty.");
+  }
+
+  return parts;
+}
+
 async function openEditor(filePath, editor) {
   const command = resolveEditorCommand(editor);
+  const [executable, ...baseArgs] = splitCommandLine(command);
 
   await new Promise((resolve, reject) => {
-    const child = spawn(command, [filePath], {
+    const child = spawn(executable, [...baseArgs, filePath], {
       stdio: "inherit",
-      shell: true,
+      shell: false,
     });
 
     child.on("error", reject);
@@ -803,6 +873,13 @@ function renderMutationResult(result, options) {
   }
 
   console.log(`policy/${result.response.name} unchanged`);
+}
+
+function clearTerminalScreen() {
+  if (!process.stdout || typeof process.stdout.write !== "function") {
+    return;
+  }
+  process.stdout.write("\x1b[2J\x1b[H");
 }
 
 async function handleCapture(options) {
@@ -1076,7 +1153,26 @@ async function handleApply(options) {
 }
 
 async function handleTui(options) {
-  await runTui(options);
+  let nextOptions = { ...options };
+
+  while (true) {
+    const action = await runTui(nextOptions);
+    if (!action || action.type === "quit") {
+      return;
+    }
+    if (action.type === "edit-policy") {
+      clearTerminalScreen();
+      await handleEditPolicy(action.appName, action.policyName, options);
+      clearTerminalScreen();
+      nextOptions = {
+        ...options,
+        resource: nextOptions.resource || "apps",
+        resumeState: action.resumeState || null,
+      };
+      continue;
+    }
+    throw new Error(`Unsupported TUI action: ${action.type}`);
+  }
 }
 
 async function handleDeployApp(appName, options) {

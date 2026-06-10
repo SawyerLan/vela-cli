@@ -2,7 +2,6 @@ const blessed = require("blessed");
 const YAML = require("yaml");
 const { VelaClient } = require("./api");
 const { deployApplication, isDeployConflictError, resolveDeployWorkflowName } = require("./deploy");
-const policyEdit = require("./policy-edit");
 const unicode = blessed.unicode || require("blessed/lib/unicode");
 
 const RESOURCE_ORDER = ["apps", "projects", "envs", "definitions", "addons"];
@@ -182,6 +181,48 @@ function padDisplayWidth(value, width) {
   return `${text}${" ".repeat(width - displayWidth)}`;
 }
 
+function wrapLineByDisplayWidth(text, maxWidth) {
+  const input = String(text == null ? "" : text).replace(/\t/g, "  ");
+  if (!input || maxWidth <= 0) {
+    return [""];
+  }
+
+  const output = [];
+  let current = "";
+  let currentWidth = 0;
+
+  for (let index = 0; index < input.length; index += 1) {
+    const charWidth = unicode.charWidth(input, index);
+    const nextChar = unicode.isSurrogate(input, index) ? input.slice(index, index + 2) : input[index];
+
+    if (currentWidth > 0 && currentWidth + charWidth > maxWidth) {
+      output.push(current);
+      current = "";
+      currentWidth = 0;
+    }
+
+    current += nextChar;
+    currentWidth += charWidth;
+
+    if (unicode.isSurrogate(input, index)) {
+      index += 1;
+    }
+  }
+
+  if (current || output.length === 0) {
+    output.push(current);
+  }
+
+  return output;
+}
+
+function wrapTextByDisplayWidth(text, maxWidth) {
+  return String(text == null ? "" : text)
+    .split("\n")
+    .flatMap((line) => wrapLineByDisplayWidth(line, maxWidth))
+    .join("\n");
+}
+
 function getColumnRenderWidth(column) {
   return column.renderWidth || column.width || unicode.strWidth(column.title || "");
 }
@@ -274,15 +315,23 @@ function stringifyDetail(value, format) {
 }
 
 function buildRows(columns, items) {
-  const header = columns.map((column) => truncateCell(column.title, getColumnRenderWidth(column)));
+  const header = columns.map((column) =>
+    padDisplayWidth(truncateCell(column.title, getColumnRenderWidth(column)), getColumnRenderWidth(column)),
+  );
   const rows = items.map((item) =>
-    columns.map((column) => truncateCell(column.value(item), getColumnRenderWidth(column))),
+    columns.map((column) =>
+      padDisplayWidth(truncateCell(column.value(item), getColumnRenderWidth(column)), getColumnRenderWidth(column)),
+    ),
   );
   return [header, ...rows];
 }
 
 function buildPlaceholderRow(columns, message) {
-  return columns.map((column, index) => (index === 0 ? truncateCell(message, getColumnRenderWidth(column)) : ""));
+  return columns.map((column, index) =>
+    index === 0
+      ? padDisplayWidth(truncateCell(message, getColumnRenderWidth(column)), getColumnRenderWidth(column))
+      : padDisplayWidth("", getColumnRenderWidth(column)),
+  );
 }
 
 function extractContextLabel(baseUrl) {
@@ -597,6 +646,93 @@ function createAppPoliciesView(app, options = {}) {
   };
 }
 
+function buildResumeState(viewStack, filterByViewId, selectedIdByViewId) {
+  return {
+    stack: viewStack.map((view) => {
+      if (view.kind === "root") {
+        return {
+          kind: "root",
+          rootResource: view.rootResource,
+        };
+      }
+
+      if (view.kind === "project-apps") {
+        return {
+          kind: "project-apps",
+          projectName: view.scope?.projectName || "",
+          projectAlias: view.scope?.projectAlias || "",
+          owner: view.scope?.owner || "",
+          roles: view.scope?.roles || "",
+        };
+      }
+
+      if (view.kind === "app-policies") {
+        return {
+          kind: "app-policies",
+          rootResource: view.rootResource || "apps",
+          appName: view.scope?.appName || "",
+          appAlias: view.scope?.appAlias || "",
+          projectName: view.scope?.projectName || "",
+          updateTime: view.scope?.updateTime || "",
+        };
+      }
+
+      return null;
+    }).filter(Boolean),
+    filters: { ...filterByViewId },
+    selectedIds: { ...selectedIdByViewId },
+  };
+}
+
+function restoreViewStackFromResumeState(resumeState, fallbackResource) {
+  const stack = Array.isArray(resumeState?.stack) ? resumeState.stack : [];
+  if (stack.length === 0) {
+    return [createRootView(fallbackResource)];
+  }
+
+  return stack.map((entry, index) => {
+    if (!entry || typeof entry !== "object") {
+      return index === 0 ? createRootView(fallbackResource) : null;
+    }
+
+    if (entry.kind === "root") {
+      return createRootView(normalizeResourceKey(entry.rootResource || fallbackResource));
+    }
+
+    if (entry.kind === "project-apps") {
+      return createProjectAppsView({
+        name: entry.projectName || "",
+        alias: entry.projectAlias || "",
+        owner: { name: entry.owner || "" },
+        roles: String(entry.roles || "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean)
+          .map((name) => ({ name })),
+      });
+    }
+
+    if (entry.kind === "app-policies") {
+      const rootResource = normalizeResourceKey(entry.rootResource || fallbackResource);
+      return createAppPoliciesView(
+        {
+          name: entry.appName || "",
+          alias: entry.appAlias || "",
+          updateTime: entry.updateTime || "",
+          project: { name: entry.projectName || "" },
+        },
+        {
+          rootResource,
+          projectName: entry.projectName || "",
+          breadcrumbPrefix: rootResource === "projects" ? `Projects > ${entry.projectName || ""}` : "Apps",
+        },
+      );
+    }
+
+    return null;
+  }).filter(Boolean);
+}
+
 async function runTui(options = {}) {
   const initialResource = normalizeResourceKey(options.resource);
   const client = new VelaClient({
@@ -612,14 +748,19 @@ async function runTui(options = {}) {
   const screenOptions = {
     smartCSR: true,
     fullUnicode: true,
-    forceUnicode: process.platform === "win32",
+    forceUnicode: true,
     title: "vela-cli tui",
   };
 
   const screen = blessed.screen(screenOptions);
+  let isFinished = false;
+  let finishRun = () => {};
+  const completion = new Promise((resolve) => {
+    finishRun = resolve;
+  });
 
   const state = {
-    viewStack: [createRootView(initialResource)],
+    viewStack: restoreViewStackFromResumeState(options.resumeState, initialResource),
     itemsByViewId: Object.create(null),
     selectedIdByViewId: Object.create(null),
     filterByViewId: Object.create(null),
@@ -633,6 +774,22 @@ async function runTui(options = {}) {
     inputMode: null,
     pendingDeploy: null,
   };
+
+  if (options.resumeState?.filters && typeof options.resumeState.filters === "object") {
+    Object.assign(state.filterByViewId, options.resumeState.filters);
+  }
+  if (options.resumeState?.selectedIds && typeof options.resumeState.selectedIds === "object") {
+    Object.assign(state.selectedIdByViewId, options.resumeState.selectedIds);
+  }
+
+  function finish(action = { type: "quit" }) {
+    if (isFinished) {
+      return;
+    }
+    isFinished = true;
+    screen.destroy();
+    finishRun(action);
+  }
 
   const header = blessed.box({
     parent: screen,
@@ -711,7 +868,6 @@ async function runTui(options = {}) {
     border: "line",
     inputOnFocus: false,
     keys: true,
-    mouse: true,
     tags: true,
     style: {
       border: { fg: "yellow" },
@@ -726,7 +882,6 @@ async function runTui(options = {}) {
     height: "100%-8",
     keys: true,
     vi: true,
-    mouse: true,
     tags: true,
     border: "line",
     align: "left",
@@ -753,7 +908,6 @@ async function runTui(options = {}) {
     alwaysScroll: true,
     keys: true,
     vi: true,
-    mouse: true,
     label: " Help ",
     content: [
       "{bold}vela-cli tui{/bold}",
@@ -807,9 +961,9 @@ async function runTui(options = {}) {
     label: " Describe ",
     scrollable: true,
     alwaysScroll: true,
+    wrap: false,
     keys: true,
     vi: true,
-    mouse: true,
     scrollbar: {
       ch: " ",
       inverse: true,
@@ -831,7 +985,6 @@ async function runTui(options = {}) {
     tags: true,
     keys: true,
     vi: true,
-    mouse: true,
     style: {
       border: { fg: "red" },
     },
@@ -914,10 +1067,12 @@ async function runTui(options = {}) {
   }
 
   function openModal(label, content) {
+    const modalWidth = modal.width && Number.isFinite(Number(modal.width)) ? Number(modal.width) : (screen.width || 1) - 4;
+    const contentWidth = Math.max(modalWidth - 4, 1);
     modal.setLabel(` ${label} `);
     modal.show();
     modal.focus();
-    modal.setContent(content);
+    modal.setContent(wrapTextByDisplayWidth(content, contentWidth));
     modal.setScroll(0);
     screen.render();
   }
@@ -1220,8 +1375,7 @@ async function runTui(options = {}) {
     openModal(`Describe: ${currentView.getId(selectedItem)} (${state.describeFormat.toUpperCase()})`, "Loading describe output...");
 
     if (!force && state.describeCache.has(cacheKey)) {
-      modal.setContent(state.describeCache.get(cacheKey));
-      screen.render();
+      openModal(`Describe: ${currentView.getId(selectedItem)} (${state.describeFormat.toUpperCase()})`, state.describeCache.get(cacheKey));
       return;
     }
 
@@ -1229,13 +1383,11 @@ async function runTui(options = {}) {
       const described = await currentView.describeItem(client, selectedItem, currentView);
       const rendered = stringifyDetail(described, state.describeFormat);
       state.describeCache.set(cacheKey, rendered);
-      modal.setContent(rendered);
+      openModal(`Describe: ${currentView.getId(selectedItem)} (${state.describeFormat.toUpperCase()})`, rendered);
       setStatus(`Described ${currentView.getId(selectedItem)}`);
-      screen.render();
     } catch (error) {
-      modal.setContent(`Describe failed:\n${summarizeError(error)}`);
+      openModal(`Describe: ${currentView.getId(selectedItem)} (${state.describeFormat.toUpperCase()})`, `Describe failed:\n${summarizeError(error)}`);
       setStatus(`Describe failed: ${summarizeError(error)}`);
-      screen.render();
     }
   }
 
@@ -1339,19 +1491,6 @@ async function runTui(options = {}) {
     screen.render();
   }
 
-  function restoreScreenAfterExternalCommand(resumeTerminal) {
-    if (typeof resumeTerminal === "function") {
-      resumeTerminal();
-    }
-    screen.alloc();
-    renderHeader();
-    renderTabs();
-    renderFooter();
-    renderTable();
-    resourceTable.focus();
-    screen.render();
-  }
-
   async function editCurrentPolicy() {
     const currentView = getCurrentView();
     if (currentView.kind !== "app-policies") {
@@ -1376,35 +1515,14 @@ async function runTui(options = {}) {
     setStatus(`Opening editor for policy ${policyName}...`);
     screen.render();
 
-    let resumeTerminal = null;
     try {
-      let result;
-      resumeTerminal = screen.program.pause();
-
-      try {
-        result = await policyEdit.editPolicyInteractively(client, appName, policyName, {
-          editor: options.editor,
-        });
-      } finally {
-        if (resumeTerminal) {
-          restoreScreenAfterExternalCommand(resumeTerminal);
-          resumeTerminal = null;
-        }
-      }
-
-      await loadCurrentView({ force: true });
-      resourceTable.focus();
-
-      if (result.changed) {
-        setStatus(`Updated policy ${result.response.name}. Backup: ${result.backupPath}`);
-      } else {
-        setStatus(`Policy ${result.response.name} unchanged.`);
-      }
-      screen.render();
+      finish({
+        type: "edit-policy",
+        appName,
+        policyName,
+        resumeState: buildResumeState(state.viewStack, state.filterByViewId, state.selectedIdByViewId),
+      });
     } catch (error) {
-      if (resumeTerminal) {
-        restoreScreenAfterExternalCommand(resumeTerminal);
-      }
       setStatus(`Edit failed: ${summarizeError(error)}`);
       screen.render();
     }
@@ -1585,8 +1703,8 @@ async function runTui(options = {}) {
     }
 
     if (["q", "quit", "exit"].includes(command.toLowerCase())) {
-      screen.destroy();
-      process.exit(0);
+      finish({ type: "quit" });
+      return;
     }
 
     if (["?", "help"].includes(command.toLowerCase())) {
@@ -1670,8 +1788,7 @@ async function runTui(options = {}) {
   });
 
   screen.key(["C-c"], () => {
-    screen.destroy();
-    process.exit(0);
+    finish({ type: "quit" });
   });
 
   screen.key(["q"], () => {
@@ -1691,8 +1808,7 @@ async function runTui(options = {}) {
       setStatus("Deploy cancelled.");
       return;
     }
-    screen.destroy();
-    process.exit(0);
+    finish({ type: "quit" });
   });
 
   screen.key(["tab"], async () => {
@@ -1840,6 +1956,7 @@ async function runTui(options = {}) {
 
   refreshHeaderIdentity().catch(() => {});
   await loadCurrentView({ force: true });
+  return completion;
 }
 
 module.exports = {
