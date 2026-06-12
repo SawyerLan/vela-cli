@@ -122,7 +122,7 @@ Useful keys:
 - `/`: open k9s-style filter mode
 - `j` / `k` or arrow keys: move selection
 - `enter`: drill down into the selected row
-- `d`: describe the selected row
+- `y`: describe the selected row
 - `p`: deploy the selected policy after showing app, policy, and workflow for confirmation
 - `e`: edit the selected policy from the policies view
 - `esc` / `left` / `backspace`: go back one level

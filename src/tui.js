@@ -768,6 +768,10 @@ async function runTui(options = {}) {
     suppressSelectionEvent: false,
     inputMode: null,
     pendingDeploy: null,
+    detailContent: "",
+    detailSearchQuery: "",
+    detailMatches: [],
+    detailMatchIndex: -1,
   };
 
   if (options.resumeState?.filters && typeof options.resumeState.filters === "object") {
@@ -928,7 +932,8 @@ async function runTui(options = {}) {
       "  [tab] / [shift-tab] next or previous resource",
       "  [up/down] or [j/k] move selection",
       "  [enter] drill down into the selected row",
-      "  [d] describe the selected row",
+      "  [y] describe the selected row",
+      "  [/] search inside detail view, [n]/[N] next or previous match",
       "  [p] deploy the selected policy after confirmation",
       "  [e] edit the selected policy (policies view only)",
       "  [esc] / [left] / [backspace] go back one level",
@@ -1062,11 +1067,15 @@ async function runTui(options = {}) {
 
   function openModal(label, content) {
     const contentWidth = Math.max((screen.width || 1) - 4, 1);
+    state.detailContent = wrapTextByDisplayWidth(content, contentWidth);
+    state.detailSearchQuery = "";
+    state.detailMatches = [];
+    state.detailMatchIndex = -1;
     modal.setLabel(` ${label} `);
     resourceTable.hide();
     modal.show();
     modal.focus();
-    modal.setContent(wrapTextByDisplayWidth(content, contentWidth));
+    modal.setContent(state.detailContent);
     modal.setScroll(0);
     screen.render();
   }
@@ -1139,7 +1148,7 @@ async function runTui(options = {}) {
       ["</>", "Filter"],
       ["<enter>", "Open"],
       ["<esc>", "Back"],
-      ["<d>", "Describe"],
+      ["<y>", "Describe"],
       ...(isDeployableView(currentView) ? [["<p>", "Deploy"]] : []),
       ...(currentView.kind === "app-policies" ? [["<e>", "Edit"]] : []),
       ["<tab>", "Next"],
@@ -1523,9 +1532,98 @@ async function runTui(options = {}) {
 
   function closeModal() {
     modal.hide();
+    state.detailContent = "";
+    state.detailSearchQuery = "";
+    state.detailMatches = [];
+    state.detailMatchIndex = -1;
     resourceTable.show();
     resourceTable.focus();
     screen.render();
+  }
+
+  function jumpToDetailMatch(index) {
+    if (state.detailMatches.length === 0) {
+      setStatus(`No matches for /${state.detailSearchQuery}`);
+      screen.render();
+      return;
+    }
+
+    const normalizedIndex = ((index % state.detailMatches.length) + state.detailMatches.length) % state.detailMatches.length;
+    state.detailMatchIndex = normalizedIndex;
+    modal.setScroll(state.detailMatches[normalizedIndex]);
+    modal.focus();
+    setStatus(`Match ${normalizedIndex + 1}/${state.detailMatches.length} for /${state.detailSearchQuery}`);
+    screen.render();
+  }
+
+  function jumpDetailMatchByOffset(offset) {
+    if (modal.hidden || !state.detailSearchQuery) {
+      return false;
+    }
+    if (state.detailMatches.length === 0) {
+      setStatus(`No matches for /${state.detailSearchQuery}`);
+      screen.render();
+      return true;
+    }
+
+    const nextIndex = state.detailMatchIndex >= 0 ? state.detailMatchIndex + offset : 0;
+    jumpToDetailMatch(nextIndex);
+    return true;
+  }
+
+  function openDetailSearchInput() {
+    state.inputMode = "detail-search";
+    searchInput.setLabel(" Detail Search ");
+    searchInput.setValue(`/${state.detailSearchQuery}`);
+    searchInput.show();
+    searchInput.focus();
+    screen.render();
+
+    searchInput.readInput((error, value) => {
+      Promise.resolve()
+        .then(() => {
+          searchInput.hide();
+          state.inputMode = null;
+          modal.focus();
+          renderTopBar();
+
+          if (error) {
+            setStatus(`Search aborted: ${summarizeError(error)}`);
+            screen.render();
+            return;
+          }
+
+          const normalized = String(value || "").replace(/^\//, "").trim();
+          state.detailSearchQuery = normalized;
+
+          if (!normalized) {
+            state.detailMatches = [];
+            state.detailMatchIndex = -1;
+            setStatus("Cleared detail search.");
+            screen.render();
+            return;
+          }
+
+          const needle = normalized.toLowerCase();
+          state.detailMatches = state.detailContent
+            .split("\n")
+            .map((line, index) => (line.toLowerCase().includes(needle) ? index : -1))
+            .filter((index) => index >= 0);
+          state.detailMatchIndex = -1;
+
+          if (state.detailMatches.length === 0) {
+            setStatus(`No matches for /${normalized}`);
+            screen.render();
+            return;
+          }
+
+          jumpToDetailMatch(0);
+        })
+        .catch((searchError) => {
+          setStatus(`Search failed: ${summarizeError(searchError)}`);
+          screen.render();
+        });
+    });
   }
 
   function toggleHelp() {
@@ -1836,6 +1934,10 @@ async function runTui(options = {}) {
   });
 
   screen.key(["/"], () => {
+    if (!modal.hidden) {
+      openDetailSearchInput();
+      return;
+    }
     if (hasOpenOverlay()) {
       return;
     }
@@ -1882,10 +1984,8 @@ async function runTui(options = {}) {
   screen.key(["y"], async () => {
     if (!confirmBox.hidden) {
       await performConfirmedDeploy();
+      return;
     }
-  });
-
-  screen.key(["d"], async () => {
     if (hasOpenOverlay() && modal.hidden) {
       return;
     }
@@ -1893,6 +1993,20 @@ async function runTui(options = {}) {
       return;
     }
     await openDescribe(false);
+  });
+
+  screen.key(["n"], () => {
+    if (jumpDetailMatchByOffset(1)) {
+      return;
+    }
+    if (!confirmBox.hidden) {
+      closeConfirmBox();
+      setStatus("Deploy cancelled.");
+    }
+  });
+
+  screen.key(["S-n", "N"], () => {
+    jumpDetailMatchByOffset(-1);
   });
 
   screen.key(["p"], async () => {
@@ -1918,14 +2032,6 @@ async function runTui(options = {}) {
       return;
     }
     await drillDown();
-  });
-
-  screen.key(["n"], () => {
-    if (confirmBox.hidden) {
-      return;
-    }
-    closeConfirmBox();
-    setStatus("Deploy cancelled.");
   });
 
   renderHeader();
