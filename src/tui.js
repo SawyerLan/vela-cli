@@ -1031,11 +1031,12 @@ async function runTui(options = {}) {
   }
 
   function ensureSelectedId(view = getCurrentView()) {
+    const hasLoaded = Object.prototype.hasOwnProperty.call(state.itemsByViewId, view.id);
     const visibleItems = getVisibleItems(view);
     const currentId = getSelectedId(view);
     const matched = visibleItems.find((item) => view.getId(item) === currentId);
 
-    if (matched) {
+    if (matched || !hasLoaded) {
       return currentId;
     }
 
@@ -1091,13 +1092,16 @@ async function runTui(options = {}) {
     state.pendingDeploy = pendingDeploy;
     const isForceRestart = Boolean(pendingDeploy.force);
     confirmBox.setLabel(isForceRestart ? " Force Restart Confirm " : " Deploy Confirm ");
+    const appLine = `{yellow-fg}Application:{/yellow-fg} {black-bg}{bold}{white-fg} ${pendingDeploy.appName} {/white-fg}{/bold}{/black-bg}`;
+    const policyLine = `{yellow-fg}Policy:     {/yellow-fg} {black-bg}{bold}{cyan-fg} ${pendingDeploy.policyName} {/cyan-fg}{/bold}{/black-bg}`;
     confirmBox.setContent(
       isForceRestart
         ? [
             "{bold}Workflow is executing. Do you want to force a restart?{/bold}",
             "",
-            `Application: ${pendingDeploy.appName}`,
-            `Policy: ${pendingDeploy.policyName}`,
+            appLine,
+            policyLine,
+            "",
             `Workflow: ${pendingDeploy.workflowName}`,
             `Env: ${pendingDeploy.envName || "<none>"}`,
             "",
@@ -1106,8 +1110,9 @@ async function runTui(options = {}) {
         : [
             "{bold}Confirm deployment{/bold}",
             "",
-            `Application: ${pendingDeploy.appName}`,
-            `Policy: ${pendingDeploy.policyName}`,
+            appLine,
+            policyLine,
+            "",
             `Workflow: ${pendingDeploy.workflowName}`,
             `Env: ${pendingDeploy.envName || "<none>"}`,
             "",
@@ -1359,8 +1364,17 @@ async function runTui(options = {}) {
     state.viewStack.pop();
     renderHeader();
     renderTabs();
+    renderFooter();
+    screen.render();
+
+    const currentView = getCurrentView();
+    if (!state.itemsByViewId[currentView.id]) {
+      await loadCurrentView();
+      return;
+    }
+
     renderTable();
-    setStatus(`Back to ${getCurrentView().label.toLowerCase()}`);
+    setStatus(`Back to ${currentView.label.toLowerCase()}`);
     screen.render();
   }
 
